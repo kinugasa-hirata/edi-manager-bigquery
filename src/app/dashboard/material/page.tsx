@@ -28,6 +28,21 @@ interface ShipmentOrder {
 }
 type Status = 'initial_stock' | 'pending' | 'ordered' | 'confirmed' | 'delivery_confirmed' | 'delayed'
 
+
+// ── BigQuery date helper ───────────────────────────────────────────────────
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    const y = val.getUTCFullYear()
+    const m = String(val.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(val.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
+}
+
 const STATUS_CONFIG: Record<Status, { label: string; color: string; bg: string; border: string; dot: string }> = {
   initial_stock:      { label: '初期在庫',      color: 'text-gray-800',  bg: 'bg-gray-200',  border: 'border-gray-400',  dot: 'bg-gray-600' },
   pending:            { label: '保留中',        color: 'text-gray-600',  bg: 'bg-gray-100',  border: 'border-gray-300',  dot: 'bg-gray-400' },
@@ -206,7 +221,7 @@ function AIAllocationDialog({ open, order, products, plans, allOrders, lotDefs, 
     setLoading(true); setAdvice(''); setError('')
     try {
       const materialGroup = order.material_name, shipmentKg = order.quantity_kg
-      const initEntries = allOrders.filter(o=>o.status==='initial_stock'&&o.material_name===materialGroup).sort((a,b)=>b.delivery_date.localeCompare(a.delivery_date))
+      const initEntries = allOrders.filter(o=>o.status==='initial_stock'&&o.material_name===materialGroup).sort((a,b)=>toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))
       const currentMaterialKg = initEntries[0]?.quantity_kg ?? 0
       const otherConfirmedKg  = allOrders.filter(o=>o.id!==order.id&&o.material_name===materialGroup&&(o.status==='confirmed'||o.status==='delivery_confirmed')).reduce((s,o)=>s+o.quantity_kg,0)
       const pendingKg         = allOrders.filter(o=>o.id!==order.id&&o.material_name===materialGroup&&(o.status==='pending'||o.status==='ordered')).reduce((s,o)=>s+o.quantity_kg,0)
@@ -232,9 +247,9 @@ function AIAllocationDialog({ open, order, products, plans, allOrders, lotDefs, 
         const lotLines=lotDefs.map(l=>{
           const demand=shipmentOrders.filter(o=>o.product_code===p.product_code&&o.lot_number===l.lot_id).reduce((s,o)=>s+o.quantity,0)
           if(demand===0) return null
-          const lotStart=l.start_from?.slice(0,10)??''
+          const lotStart=toDateStr(l.start_from)??''
           const productionBeforeLot=weeklyPlan.filter(pl=>pl.week_start_date<lotStart).reduce((s,pl)=>s+pl.planned_quantity,0)
-          const shipmentsBeforeLot=shipmentOrders.filter(o=>o.product_code===p.product_code&&o.delivery_date?.slice(0,10)<lotStart&&o.lot_number!==l.lot_id).reduce((s,o)=>s+o.quantity,0)
+          const shipmentsBeforeLot=shipmentOrders.filter(o=>o.product_code===p.product_code&&toDateStr(o.delivery_date)<lotStart&&o.lot_number!==l.lot_id).reduce((s,o)=>s+o.quantity,0)
           const projectedStock=finishedStock+productionBeforeLot-shipmentsBeforeLot
           const shortage=Math.max(0,demand-projectedStock)
           const materialToFillShortage=p.weight_g?Math.ceil((shortage*p.weight_g)/1000):0
@@ -373,9 +388,9 @@ function EditOrderDialog({ order, onClose, onStatusChange, onDeliveryDateChange,
   const [tradingCompany, setTradingCompany] = useState('')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  useEffect(() => { if (order) { setNewDate(toDateKey(order.delivery_date)); setTradingCompany(order.trading_company??'') } }, [order])
+  useEffect(() => { if (order) { setNewDate(toDateStr(order.delivery_date)); setTradingCompany(order.trading_company??'') } }, [order])
   if (!order) return null
-  const currentDateKey = toDateKey(order.delivery_date)
+  const currentDateKey = toDateStr(order.delivery_date)
   async function handleStatus(s: Status) { setSaving(true); await onStatusChange(order!.id,s); setSaving(false); onClose() }
   async function handleDateSave() { if (!newDate||newDate===currentDateKey) { onClose(); return } setSaving(true); await onDeliveryDateChange(order!.id,newDate); setSaving(false); onClose() }
   async function handleTradingCompanySave() { setSaving(true); await onTradingCompanyChange(order!.id,tradingCompany.trim()||null); setSaving(false); onClose() }
@@ -531,7 +546,7 @@ export default function MaterialPage() {
       .sort((a,b)=>{
         const ga=GROUP_ORDER.indexOf(a.material_name), gb=GROUP_ORDER.indexOf(b.material_name)
         if(ga!==gb) return ga-gb
-        return (a.delivery_date??'').localeCompare(b.delivery_date??'')
+        return toDateStr(a.delivery_date).localeCompare(toDateStr(b.delivery_date))
       })
 
     const bdr = { style: BorderStyle.SINGLE, size: 4, color: '000000' }
@@ -601,7 +616,7 @@ export default function MaterialPage() {
         ...faxRows.map(mo=>new TableRow({children:[
           c(mo.material_name,{width:1800,align:AlignmentType.CENTER}),
           c(`${mo.quantity_kg.toLocaleString()} kg`,{width:1600,align:AlignmentType.RIGHT}),
-          c(fmtDate(mo.delivery_date),{width:2200,align:AlignmentType.CENTER}),
+          c(fmtDate(toDateStr(mo.delivery_date)),{width:2200,align:AlignmentType.CENTER}),
           c('',{width:2200,align:AlignmentType.CENTER}),
           c(STATUS_LABELS[mo.status]??mo.status,{width:2666,align:AlignmentType.CENTER}),
         ]})),
@@ -646,17 +661,17 @@ export default function MaterialPage() {
     const CONFIRMED_STATUSES:Status[]=['delivery_confirmed','confirmed']
     const initialStock=new Map<string,number>()
     const initEntries=orders.filter(o=>o.status==='initial_stock')
-    for(const g of GROUP_ORDER){const entries=initEntries.filter(o=>o.material_name===g).sort((a,b)=>b.delivery_date.localeCompare(a.delivery_date));initialStock.set(g,entries.length>0?entries[0].quantity_kg:0)}
+    for(const g of GROUP_ORDER){const entries=initEntries.filter(o=>o.material_name===g).sort((a,b)=>toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)));initialStock.set(g,entries.length>0?entries[0].quantity_kg:0)}
     const openingBalance=new Map<string,number>(GROUP_ORDER.map(g=>[g,initialStock.get(g)??0]))
     for(const o of orders){
       if(o.status==='initial_stock') continue; if(!CONFIRMED_STATUSES.includes(o.status)) continue
-      const dateKey=toDateKey(o.delivery_date); if(!dateKey) continue
+      const dateKey=toDateStr(o.delivery_date); if(!dateKey) continue
       const weekStart=getMondayStr(dateKey); if(weekStart<firstWeek) openingBalance.set(o.material_name,(openingBalance.get(o.material_name)??0)+o.quantity_kg)
     }
     const confirmedByWeek=new Map<string,Map<string,number>>(),pendingByWeek=new Map<string,Map<string,number>>()
     for(const o of orders){
       if(o.status==='initial_stock') continue
-      const dateKey=toDateKey(o.delivery_date); if(!dateKey) continue
+      const dateKey=toDateStr(o.delivery_date); if(!dateKey) continue
       const weekStart=getMondayStr(dateKey)
       if(CONFIRMED_STATUSES.includes(o.status)&&weekStart<firstWeek) continue
       const isConfirmed=CONFIRMED_STATUSES.includes(o.status),targetMap=isConfirmed?confirmedByWeek:pendingByWeek
@@ -682,11 +697,11 @@ export default function MaterialPage() {
   const purchaseOrders = orders.filter(o=>o.status!=='initial_stock')
   const {dateCols,matrix} = useMemo(()=>{
     const dateSet=new Set<string>()
-    for(const o of purchaseOrders){const key=toDateKey(o.delivery_date);if(key)dateSet.add(key)}
+    for(const o of purchaseOrders){const key=toDateStr(o.delivery_date);if(key)dateSet.add(key)}
     const dateCols=Array.from(dateSet).sort()
     const matrix:Record<string,Record<string,MaterialOrder[]>>={}
     for(const g of GROUP_ORDER){matrix[g]={};for(const d of dateCols)matrix[g][d]=[]}
-    for(const o of purchaseOrders){const key=toDateKey(o.delivery_date);if(matrix[o.material_name]?.[key]!==undefined)matrix[o.material_name][key].push(o)}
+    for(const o of purchaseOrders){const key=toDateStr(o.delivery_date);if(matrix[o.material_name]?.[key]!==undefined)matrix[o.material_name][key].push(o)}
     return {dateCols,matrix}
   },[purchaseOrders])
 
@@ -727,9 +742,9 @@ export default function MaterialPage() {
               <tbody>
                 {GROUP_ORDER.map((g,gIdx)=>{
                   const gs=GROUP_STYLES[g],rows=stockFlow.get(g)??[]
-                  const rawInitKg=orders.filter(o=>o.status==='initial_stock'&&o.material_name===g).sort((a,b)=>b.delivery_date.localeCompare(a.delivery_date))[0]?.quantity_kg??0
+                  const rawInitKg=orders.filter(o=>o.status==='initial_stock'&&o.material_name===g).sort((a,b)=>toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]?.quantity_kg??0
                   const firstWeekStr=flowWeeks[0]??''
-                  const preChartConfirmed=orders.filter(o=>o.material_name===g&&(o.status==='confirmed'||o.status==='delivery_confirmed')&&getMondayStr(toDateKey(o.delivery_date))<firstWeekStr).reduce((s,o)=>s+o.quantity_kg,0)
+                  const preChartConfirmed=orders.filter(o=>o.material_name===g&&(o.status==='confirmed'||o.status==='delivery_confirmed')&&getMondayStr(toDateStr(o.delivery_date))<firstWeekStr).reduce((s,o)=>s+o.quantity_kg,0)
                   const initKg=rawInitKg+preChartConfirmed
                   return (
                     <>

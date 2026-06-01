@@ -39,6 +39,19 @@ interface MaterialOrder {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
+// ── BigQuery date helper ─────────────────────────────────────────────────────
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    return val.getUTCFullYear() + '-' +
+      String(val.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(val.getUTCDate()).padStart(2, '0')
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
+}
+
 const GROUP_ORDER = ['M90S', '300NP', '100G20', '950X01']
 const GROUP_COLORS: Record<string, { badge: string; header: string; solid: string; accent: string }> = {
   'M90S':   { badge: 'bg-blue-50 text-blue-700',     header: 'bg-blue-800',   solid: 'bg-blue-500',    accent: 'bg-blue-50' },
@@ -152,7 +165,7 @@ export default function MfgLotPage() {
     const maxDate = new Map<string, string>()
     for (const o of orders) {
       if (!o.mfg_lot_no || !o.delivery_date) continue
-      const d = o.delivery_date.slice(0, 10)
+      const d = toDateStr(o.delivery_date)
       const curMin = minDate.get(o.mfg_lot_no)
       const curMax = maxDate.get(o.mfg_lot_no)
       if (!curMin || d < curMin) minDate.set(o.mfg_lot_no, d)
@@ -187,14 +200,14 @@ export default function MfgLotPage() {
           .reduce((s, mo) => s + mo.quantity_kg, 0))
       }
 
-      const allWeeks = Array.from(new Set(productionPlan.map(pp => pp.week_start_date.slice(0,10)))).sort()
+      const allWeeks = Array.from(new Set(productionPlan.map(pp => pp ? toDateStr(pp.week_start_date) : ''))).sort()
       const materialUsed = new Map<string, number>()
       for (const g of ['M90S','300NP','100G20','950X01']) materialUsed.set(g, 0)
 
       let feasibleTotal = 0
       for (const wk of allWeeks) {
         const wkPlans = productionPlan
-          .filter(pp => pp.week_start_date.slice(0,10) === wk)
+          .filter(pp => pp ? toDateStr(pp.week_start_date) : '' === wk)
           .sort((a, b) => {
             const pa = products.find(pr => pr.product_code === a.product_code)
             const pb = products.find(pr => pr.product_code === b.product_code)

@@ -38,6 +38,20 @@ const StockContext = createContext<StockContextType>({
   recalcWithOrders: async () => {},
 })
 
+// ── BigQuery date normalizer ──────────────────────────────────────────────────
+// BigQuery returns DATE/TIMESTAMP as objects; normalize to "YYYY-MM-DD"
+function bqDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    return val.getUTCFullYear() + '-' +
+      String(val.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(val.getUTCDate()).padStart(2, '0')
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
+}
+
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -82,10 +96,8 @@ export async function calculateDailyStock(
   overrideMaterialOrders?: GuestMaterialOrder[]
 ): Promise<DailyStock | null> {
   try {
-    // Fetch orders, products, production plan in parallel
-    // Material orders: use override (guest mode) or fetch from API
     const [oRes, pRes, plRes, mRes] = await Promise.all([
-      fetch('/api/orders').then(r => r.json()),
+      fetch('/api/orders?status=active').then(r => r.json()),
       fetch('/api/products').then(r => r.json()),
       fetch('/api/production-plan').then(r => r.json()),
       overrideMaterialOrders
@@ -93,10 +105,10 @@ export async function calculateDailyStock(
         : fetch('/api/material-orders').then(r => r.json()),
     ])
 
-    const orders         = (oRes.data ?? [])  as any[]
-    const products       = (pRes.data ?? [])  as any[]
+    const orders         = (oRes.data  ?? []) as any[]
+    const products       = (pRes.data  ?? []) as any[]
     const plans          = (plRes.data ?? []) as any[]
-    const materialOrders = (mRes.data ?? [])  as any[]
+    const materialOrders = (mRes.data  ?? []) as any[]
 
     const CONFIRMED         = new Set(['confirmed', 'delivery_confirmed'])
     const GROUP_ORDER_LOCAL = ['M90S', '300NP', '100G20', '950X01']
@@ -108,12 +120,12 @@ export async function calculateDailyStock(
     for (const g of GROUP_ORDER_LOCAL) {
       const init = materialOrders
         .filter((o: any) => o.status === 'initial_stock' && o.material_name === g)
-        .sort((a: any, b: any) => b.delivery_date.localeCompare(a.delivery_date))[0]
+        .sort((a: any, b: any) => bqDateStr(b.delivery_date).localeCompare(bqDateStr(a.delivery_date)))[0]
       const preConfirmed = materialOrders
         .filter((o: any) =>
           o.material_name === g &&
           CONFIRMED.has(o.status) &&
-          getMondayStr(o.delivery_date.slice(0, 10)) < firstWeek
+          getMondayStr(bqDateStr(o.delivery_date)) < firstWeek
         )
         .reduce((s: number, o: any) => s + o.quantity_kg, 0)
       materialOpening.set(g, (init?.quantity_kg ?? 0) + preConfirmed)
@@ -123,7 +135,7 @@ export async function calculateDailyStock(
     const materialArrivals = new Map<string, Map<string, number>>()
     for (const o of materialOrders) {
       if (!CONFIRMED.has(o.status)) continue
-      const weekStr = getMondayStr(o.delivery_date.slice(0, 10))
+      const weekStr = getMondayStr(bqDateStr(o.delivery_date))
       if (weekStr < firstWeek) continue
       if (!materialArrivals.has(weekStr)) materialArrivals.set(weekStr, new Map())
       const wm = materialArrivals.get(weekStr)!
@@ -133,19 +145,19 @@ export async function calculateDailyStock(
     // ── Production plan map ───────────────────────────────────────────────────
     const planMap = new Map<string, Map<string, number>>()
     for (const p of plans) {
-      const weekKey = getMondayStr(p.week_start_date)
+      const weekKey = getMondayStr(bqDateStr(p.week_start_date))
       if (!planMap.has(p.product_code)) planMap.set(p.product_code, new Map())
       planMap.get(p.product_code)!.set(weekKey, p.planned_quantity)
     }
 
     const allWeekKeys = new Set<string>()
-    for (const p of plans) allWeekKeys.add(getMondayStr(p.week_start_date))
+    for (const p of plans) allWeekKeys.add(getMondayStr(bqDateStr(p.week_start_date)))
     const sortedWeeks = Array.from(allWeekKeys).sort()
 
     // ── Shipment map ──────────────────────────────────────────────────────────
     const shipMap = new Map<string, Map<string, number>>()
     for (const o of orders) {
-      const d = o.delivery_date?.slice(0, 10)
+      const d = bqDateStr(o.delivery_date)
       if (!d || !o.product_code) continue
       if (!shipMap.has(o.product_code)) shipMap.set(o.product_code, new Map())
       shipMap.get(o.product_code)!.set(d, (shipMap.get(o.product_code)!.get(d) ?? 0) + o.quantity)

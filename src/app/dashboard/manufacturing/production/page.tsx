@@ -476,13 +476,13 @@ export default function ProductionPage() {
     for (const g of GROUP_ORDER) {
       const initEntry = materialOrders
         .filter(o => o.status === 'initial_stock' && o.material_name === g)
-        .sort((a, b) => b.delivery_date.localeCompare(a.delivery_date))[0]
+        .sort((a, b) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]
       const initKg = initEntry?.quantity_kg ?? 0
       const preConfirmed = materialOrders
         .filter(o =>
           o.material_name === g &&
-          CONFIRMED_MATERIAL.includes(o.status) &&
-          o.delivery_date.slice(0, 10) < firstWeek,
+          CONFIRMED_MATERIAL.includes(o.status as any) &&
+          toDateStr(o.delivery_date) < firstWeek,
         )
         .reduce((s, o) => s + o.quantity_kg, 0)
       matBalance.set(g, initKg + preConfirmed)
@@ -490,7 +490,7 @@ export default function ProductionPage() {
 
     const arrivals = new Map<string, Map<string, number>>()
     for (const o of materialOrders) {
-      if (!CONFIRMED_MATERIAL.includes(o.status)) continue
+      if (!CONFIRMED_MATERIAL.includes(o.status as any)) continue
       const weekStr = toDateStr(getMondayOf(new Date(o.delivery_date + 'T00:00:00')))
       if (weekStr < firstWeek) continue
       if (!arrivals.has(weekStr)) arrivals.set(weekStr, new Map())
@@ -781,13 +781,13 @@ export default function ProductionPage() {
                     const firstWeekStr = toDateStr(weeks[0])
                     const initEntry = materialOrders
                       .filter(o => o.status === 'initial_stock' && o.material_name === gname)
-                      .sort((a, b) => b.delivery_date.localeCompare(a.delivery_date))[0]
+                      .sort((a, b) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]
                     const initKg = initEntry?.quantity_kg ?? 0
                     const preConfirmed = materialOrders
                       .filter(o =>
                         o.material_name === gname &&
-                        CONFIRMED_MATERIAL.includes(o.status) &&
-                        o.delivery_date.slice(0, 10) < firstWeekStr,
+                        CONFIRMED_MATERIAL.includes(o.status as any) &&
+                        toDateStr(o.delivery_date) < firstWeekStr,
                       )
                       .reduce((s, o) => s + o.quantity_kg, 0)
                     return initKg + preConfirmed

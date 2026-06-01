@@ -63,6 +63,24 @@ const GROUP_COLORS: Record<string, string> = {
   '950X01': 'bg-purple-50 text-purple-700 border-purple-200',
 }
 
+
+// ── BigQuery date helper ───────────────────────────────────────────────────
+// BigQuery returns TIMESTAMP/DATE as objects or ISO strings with timezone.
+// This normalizes any format to a plain "YYYY-MM-DD" string.
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    const y = val.getUTCFullYear()
+    const m = String(val.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(val.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  // BigQuery BigQueryDate / BigQueryTimestamp object
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
+}
+
 function SortIcon({ state }: { state: 'asc' | 'desc' | null }) {
   if (!state) return <span className="ml-1 text-gray-300 text-[10px]">↕</span>
   return <span className="ml-1 text-blue-500 text-[10px]">{state === 'asc' ? '↑' : '↓'}</span>
@@ -147,7 +165,7 @@ export default function OrdersPage() {
     }
     for (const [pc, pOrders] of byProduct) {
       const sorted  = [...pOrders].sort((a, b) =>
-        (a.delivery_date?.slice(0, 10) ?? '').localeCompare(b.delivery_date?.slice(0, 10) ?? ''))
+        toDateStr(a.delivery_date).localeCompare(toDateStr(b.delivery_date)))
       let running   = getStock(pc)
       for (const o of sorted) {
         running -= (o.quantity ?? 0)
@@ -209,8 +227,8 @@ export default function OrdersPage() {
       )
     }
     return [...list].sort((a, b) => {
-      let va: any = (a as any)[sortKey] ?? ''
-      let vb: any = (b as any)[sortKey] ?? ''
+      let va: any = sortKey === 'delivery_date' ? toDateStr((a as any)[sortKey]) : ((a as any)[sortKey] ?? '')
+      let vb: any = sortKey === 'delivery_date' ? toDateStr((b as any)[sortKey]) : ((b as any)[sortKey] ?? '')
       if (sortKey === 'quantity') { va = Number(va); vb = Number(vb) }
       const cmp = va < vb ? -1 : va > vb ? 1 : 0
       return sortDir === 'asc' ? cmp : -cmp
@@ -234,7 +252,7 @@ export default function OrdersPage() {
     const earliestDate = new Map<string, string>()
     for (const o of orders) {
       if (!o.mfg_lot_no || !o.delivery_date) continue
-      const d   = o.delivery_date.slice(0, 10)
+      const d   = toDateStr(o.delivery_date)
       const cur = earliestDate.get(o.mfg_lot_no)
       if (!cur || d < cur) earliestDate.set(o.mfg_lot_no, d)
     }
@@ -265,7 +283,7 @@ export default function OrdersPage() {
     const earliest = new Map<string, string>()
     for (const o of orders) {
       if (!o.mfg_lot_no || !o.delivery_date) continue
-      const d   = o.delivery_date.slice(0, 10)
+      const d   = toDateStr(o.delivery_date)
       const cur = earliest.get(o.mfg_lot_no)
       if (!cur || d < cur) earliest.set(o.mfg_lot_no, d)
     }
@@ -274,8 +292,8 @@ export default function OrdersPage() {
 
   function handleExport(format: 'csv' | 'excel') {
     const sorted = [...exportOrders].sort((a, b) => {
-      const dateA = a.delivery_date?.slice(0, 10) ?? ''
-      const dateB = b.delivery_date?.slice(0, 10) ?? ''
+      const dateA = toDateStr(a.delivery_date)
+      const dateB = toDateStr(b.delivery_date)
       if (dateA !== dateB) return dateA.localeCompare(dateB)
       const mfgA = mfgLotSortOrder.get(a.mfg_lot_no) ?? a.mfg_lot_no ?? ''
       const mfgB = mfgLotSortOrder.get(b.mfg_lot_no) ?? b.mfg_lot_no ?? ''
@@ -289,7 +307,7 @@ export default function OrdersPage() {
 
     if (format === 'csv') {
       const rows = sorted.map(o => {
-        const deliveryStr = o.delivery_date?.slice(0, 10) ?? ''
+        const deliveryStr = toDateStr(o.delivery_date)
         return [
           o.order_no, o.product_code, o.product_name, o.group_name,
           o.lot_number ? `${o.lot_number} (${LOT_LABELS[o.lot_number] ?? ''})` : '',
@@ -341,7 +359,7 @@ export default function OrdersPage() {
 
       for (const o of sheetOrders) {
         const pc          = o.product_code
-        const deliveryStr = o.delivery_date?.slice(0, 10) ?? ''
+        const deliveryStr = toDateStr(o.delivery_date)
         const deliveryCell = deliveryStr ? new Date(deliveryStr + 'T00:00:00') : ''
         if (!runningStock.has(pc)) {
           const starting = getStartingStock(pc)
@@ -569,7 +587,7 @@ export default function OrdersPage() {
                   <tr><td colSpan={9} className="text-center py-16 text-sm text-gray-400">データがありません</td></tr>
                 ) : paged.map((o, idx) => {
                   const gc          = GROUP_COLORS[o.group_name] ?? 'bg-gray-50 text-gray-600 border-gray-200'
-                  const deliveryStr = o.delivery_date?.slice(0, 10) ?? ''
+                  const deliveryStr = toDateStr(o.delivery_date)
                   const deliveryFmt = deliveryStr
                     ? (() => { const d = new Date(deliveryStr + 'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}` })()
                     : '—'

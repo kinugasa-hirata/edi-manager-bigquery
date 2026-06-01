@@ -39,6 +39,21 @@ interface MaterialOrder {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
+
+// ── BigQuery date helper ───────────────────────────────────────────────────
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    const y = val.getUTCFullYear()
+    const m = String(val.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(val.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
+}
+
 const GROUP_ORDER = ['M90S', '300NP', '100G20', '950X01']
 const GROUP_COLORS: Record<string, { badge: string; header: string }> = {
   'M90S':   { badge: 'bg-blue-50 text-blue-700',     header: 'bg-blue-800' },
@@ -133,14 +148,14 @@ export default function AllocationPage() {
     }
     for (const mo of materialOrders) {
       if (mo.status === 'initial_stock' || !CONFIRMED_M.has(mo.status)) continue
-      const weekStart = getMondayStr(mo.delivery_date.slice(0, 10))
+      const weekStart = getMondayStr(toDateStr(mo.delivery_date))
       if (weekStart < firstWeek)
         openingBalance.set(mo.material_name, (openingBalance.get(mo.material_name) ?? 0) + mo.quantity_kg)
     }
     const confirmedByWeek = new Map<string, Map<string, number>>()
     for (const mo of materialOrders) {
       if (mo.status === 'initial_stock' || !CONFIRMED_M.has(mo.status)) continue
-      const weekStart = getMondayStr(mo.delivery_date.slice(0, 10))
+      const weekStart = getMondayStr(toDateStr(mo.delivery_date))
       if (weekStart < firstWeek) continue
       if (!confirmedByWeek.has(weekStart)) confirmedByWeek.set(weekStart, new Map())
       const wm = confirmedByWeek.get(weekStart)!
@@ -179,7 +194,7 @@ export default function AllocationPage() {
     const earliest = new Map<string, string>()
     for (const o of orders) {
       if (!o.mfg_lot_no || !o.delivery_date) continue
-      const d = o.delivery_date.slice(0, 10), cur = earliest.get(o.mfg_lot_no)
+      const d = toDateStr(o.delivery_date), cur = earliest.get(o.mfg_lot_no)
       if (!cur || d < cur) earliest.set(o.mfg_lot_no, d)
     }
     return Array.from(earliest.keys()).sort((a, b) => (earliest.get(a) ?? '').localeCompare(earliest.get(b) ?? ''))
@@ -189,7 +204,7 @@ export default function AllocationPage() {
     const minDate = new Map<string, string>(), maxDate = new Map<string, string>()
     for (const o of orders) {
       if (!o.mfg_lot_no || !o.delivery_date) continue
-      const d = o.delivery_date.slice(0, 10)
+      const d = toDateStr(o.delivery_date)
       const curMin = minDate.get(o.mfg_lot_no), curMax = maxDate.get(o.mfg_lot_no)
       if (!curMin || d < curMin) minDate.set(o.mfg_lot_no, d)
       if (!curMax || d > curMax) maxDate.set(o.mfg_lot_no, d)
