@@ -871,3 +871,4 @@ export default function MfgLotPage() {
       )}
     </div>
   )
+}
