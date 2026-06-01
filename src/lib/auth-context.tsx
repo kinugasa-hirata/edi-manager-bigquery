@@ -10,6 +10,8 @@ interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
+  isGuest: boolean
+  isEditor: boolean
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
@@ -17,12 +19,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null)
 
 const USERS: Record<string, { password: string; name: string; role: 'admin' | 'editor' | 'guest' }> = {
-  'admin@test.com': { password: 'admin123', name: 'Admin User', role: 'admin' },
-  'kinugasa.hirata@gmail.com': { password: 'admin123', name: 'Shuhei Kinugasa', role: 'admin' },
+  'admin@test.com':              { password: 'admin123', name: 'Admin User',      role: 'admin' },
+  'kinugasa.hirata@gmail.com':   { password: 'admin123', name: 'Shuhei Kinugasa', role: 'admin' },
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user,    setUser]    = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -46,8 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('bq_user')
   }
 
+  const isGuest  = user?.role === 'guest'
+  const isEditor = user?.role === 'editor'
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, isGuest, isEditor, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

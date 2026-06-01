@@ -3,29 +3,27 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useStock } from '@/lib/stock-context'
-import { databases, DB_ID, COLLECTIONS } from '@/lib/appwrite'
-import { ID, Query, Permission, Role } from 'appwrite'
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
          AlignmentType, BorderStyle, WidthType, ShadingType, VerticalAlign } from 'docx'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface MaterialOrder {
-  $id: string; material_name: string; quantity_kg: number
+  id: string; material_name: string; quantity_kg: number
   delivery_date: string; order_date: string; status: Status
   note: string | null; trading_company: string | null
 }
 interface ProductMaster {
-  $id: string; product_code: string; group_name: string
+  id: string; product_code: string; group_name: string
   weight_g: number | null; initial_stock: number | null
 }
 interface ProductionPlan {
-  $id: string; product_code: string; week_start_date: string; planned_quantity: number
+  id: string; product_code: string; week_start_date: string; planned_quantity: number
 }
 interface LotDef {
-  $id: string; lot_id: string; lot_label: string; start_from: string; sort_order: number
+  id: string; lot_id: string; lot_label: string; start_from: string; sort_order: number
 }
 interface ShipmentOrder {
-  $id: string; product_code: string; product_name?: string
+  id: string; product_code: string; product_name?: string
   lot_number: string; quantity: number; delivery_date: string
 }
 type Status = 'initial_stock' | 'pending' | 'ordered' | 'confirmed' | 'delivery_confirmed' | 'delayed'
@@ -210,8 +208,8 @@ function AIAllocationDialog({ open, order, products, plans, allOrders, lotDefs, 
       const materialGroup = order.material_name, shipmentKg = order.quantity_kg
       const initEntries = allOrders.filter(o=>o.status==='initial_stock'&&o.material_name===materialGroup).sort((a,b)=>b.delivery_date.localeCompare(a.delivery_date))
       const currentMaterialKg = initEntries[0]?.quantity_kg ?? 0
-      const otherConfirmedKg  = allOrders.filter(o=>o.$id!==order.$id&&o.material_name===materialGroup&&(o.status==='confirmed'||o.status==='delivery_confirmed')).reduce((s,o)=>s+o.quantity_kg,0)
-      const pendingKg         = allOrders.filter(o=>o.$id!==order.$id&&o.material_name===materialGroup&&(o.status==='pending'||o.status==='ordered')).reduce((s,o)=>s+o.quantity_kg,0)
+      const otherConfirmedKg  = allOrders.filter(o=>o.id!==order.id&&o.material_name===materialGroup&&(o.status==='confirmed'||o.status==='delivery_confirmed')).reduce((s,o)=>s+o.quantity_kg,0)
+      const pendingKg         = allOrders.filter(o=>o.id!==order.id&&o.material_name===materialGroup&&(o.status==='pending'||o.status==='ordered')).reduce((s,o)=>s+o.quantity_kg,0)
       const totalPoolWithShipmentKg = currentMaterialKg + otherConfirmedKg + shipmentKg
       const relatedProducts = products.filter(p=>p.group_name===materialGroup&&p.weight_g)
       const totalMaterialDemandKg = relatedProducts.reduce((sum,p)=>{
@@ -325,7 +323,7 @@ function TradingCompanySelector({ value, onChange }: { value: string; onChange: 
   )
 }
 
-interface NewOrderDialogProps { open: boolean; defaultGroup?: string; defaultDate?: string; onClose: () => void; onSave: (data: Omit<MaterialOrder,'$id'>) => Promise<void> }
+interface NewOrderDialogProps { open: boolean; defaultGroup?: string; defaultDate?: string; onClose: () => void; onSave: (data: Omit<MaterialOrder,'id'>) => Promise<void> }
 function NewOrderDialog({ open, defaultGroup, defaultDate, onClose, onSave }: NewOrderDialogProps) {
   const [group, setGroup] = useState(defaultGroup ?? GROUP_ORDER[0])
   const [quantityKg, setQuantityKg] = useState('')
@@ -378,10 +376,10 @@ function EditOrderDialog({ order, onClose, onStatusChange, onDeliveryDateChange,
   useEffect(() => { if (order) { setNewDate(toDateKey(order.delivery_date)); setTradingCompany(order.trading_company??'') } }, [order])
   if (!order) return null
   const currentDateKey = toDateKey(order.delivery_date)
-  async function handleStatus(s: Status) { setSaving(true); await onStatusChange(order!.$id,s); setSaving(false); onClose() }
-  async function handleDateSave() { if (!newDate||newDate===currentDateKey) { onClose(); return } setSaving(true); await onDeliveryDateChange(order!.$id,newDate); setSaving(false); onClose() }
-  async function handleTradingCompanySave() { setSaving(true); await onTradingCompanyChange(order!.$id,tradingCompany.trim()||null); setSaving(false); onClose() }
-  async function handleDelete() { if (!confirm('この注文を削除しますか？')) return; setDeleting(true); await onDelete(order!.$id); setDeleting(false); onClose() }
+  async function handleStatus(s: Status) { setSaving(true); await onStatusChange(order!.id,s); setSaving(false); onClose() }
+  async function handleDateSave() { if (!newDate||newDate===currentDateKey) { onClose(); return } setSaving(true); await onDeliveryDateChange(order!.id,newDate); setSaving(false); onClose() }
+  async function handleTradingCompanySave() { setSaving(true); await onTradingCompanyChange(order!.id,tradingCompany.trim()||null); setSaving(false); onClose() }
+  async function handleDelete() { if (!confirm('この注文を削除しますか？')) return; setDeleting(true); await onDelete(order!.id); setDeleting(false); onClose() }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
@@ -438,17 +436,17 @@ export default function MaterialPage() {
     setLoading(true)
     try {
       const [oRes,pRes,plRes,lRes,sRes] = await Promise.all([
-        databases.listDocuments(DB_ID,COLLECTIONS.MATERIAL_ORDERS,[Query.orderAsc('delivery_date'),Query.limit(500)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.PRODUCT_MASTER,[Query.limit(100)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.PRODUCTION_PLAN,[Query.limit(2000)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.LOT_DEFINITIONS,[Query.orderAsc('sort_order'),Query.limit(20)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.ORDERS,[Query.equal('status','active'),Query.limit(2000)]),
+        fetch('/api/material-orders').then(r => r.json()),
+        fetch('/api/products').then(r => r.json()),
+        fetch('/api/production-plan').then(r => r.json()),
+        fetch('/api/lots').then(r => r.json()),
+        fetch('/api/orders?status=active').then(r => r.json()),
       ])
-      setOrders(oRes.documents as unknown as MaterialOrder[])
-      setProducts(pRes.documents as unknown as ProductMaster[])
-      setPlans(plRes.documents as unknown as ProductionPlan[])
-      setLotDefs(lRes.documents as unknown as LotDef[])
-      setShipments(sRes.documents as unknown as ShipmentOrder[])
+      setOrders(oRes.data ?? [])
+      setProducts(pRes.data ?? [])
+      setPlans(plRes.data ?? [])
+      setLotDefs(lRes.data ?? [])
+      setShipments(sRes.data ?? [])
     } catch(e){console.error(e)} finally{setLoading(false)}
   }
 
@@ -456,15 +454,15 @@ export default function MaterialPage() {
     setLoading(true)
     try {
       const [pRes,plRes,lRes,sRes] = await Promise.all([
-        databases.listDocuments(DB_ID,COLLECTIONS.PRODUCT_MASTER,[Query.limit(100)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.PRODUCTION_PLAN,[Query.limit(2000)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.LOT_DEFINITIONS,[Query.orderAsc('sort_order'),Query.limit(20)]),
-        databases.listDocuments(DB_ID,COLLECTIONS.ORDERS,[Query.equal('status','active'),Query.limit(2000)]),
+        fetch('/api/products').then(r => r.json()),
+        fetch('/api/production-plan').then(r => r.json()),
+        fetch('/api/lots').then(r => r.json()),
+        fetch('/api/orders?status=active').then(r => r.json()),
       ])
-      setProducts(pRes.documents as unknown as ProductMaster[])
-      setPlans(plRes.documents as unknown as ProductionPlan[])
-      setLotDefs(lRes.documents as unknown as LotDef[])
-      setShipments(sRes.documents as unknown as ShipmentOrder[])
+      setProducts(pRes.data ?? [])
+      setPlans(plRes.data ?? [])
+      setLotDefs(lRes.data ?? [])
+      setShipments(sRes.data ?? [])
     } catch(e){console.error(e)} finally{setLoading(false)}
   }
 
@@ -482,26 +480,26 @@ export default function MaterialPage() {
     if (!isSimulation) return; await recalcWithOrders(localOrders as any[])
   }
 
-  async function handleCreate(data: Omit<MaterialOrder,'$id'>) {
-    if (isSimulation) { const t:MaterialOrder={...data,$id:`guest_${Date.now()}`}; setOrders(prev=>{const n=[...prev,t];recalcGuestStock(n);return n}); return }
-    await databases.createDocument(DB_ID,COLLECTIONS.MATERIAL_ORDERS,ID.unique(),data,[Permission.read(Role.users()),Permission.update(Role.users()),Permission.delete(Role.users())])
+  async function handleCreate(data: Omit<MaterialOrder,'id'>) {
+    if (isSimulation) { const t:MaterialOrder={...data,id:`guest_${Date.now()}`}; setOrders(prev=>{const n=[...prev,t];recalcGuestStock(n);return n}); return }
+    await fetch('/api/material-orders', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) })
     await fetchData()
   }
   async function handleStatusChange(id:string,status:Status) {
-    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.$id===id?{...o,status}:o);recalcGuestStock(n);return n}); return }
-    await databases.updateDocument(DB_ID,COLLECTIONS.MATERIAL_ORDERS,id,{status}); await fetchData()
+    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.id===id?{...o,status}:o);recalcGuestStock(n);return n}); return }
+    await fetch('/api/material-orders', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id, status }) }); await fetchData()
   }
   async function handleDeliveryDateChange(id:string,delivery_date:string) {
-    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.$id===id?{...o,delivery_date}:o);recalcGuestStock(n);return n}); return }
-    await databases.updateDocument(DB_ID,COLLECTIONS.MATERIAL_ORDERS,id,{delivery_date}); await fetchData()
+    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.id===id?{...o,delivery_date}:o);recalcGuestStock(n);return n}); return }
+    await fetch('/api/material-orders', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id, delivery_date }) }); await fetchData()
   }
   async function handleTradingCompanyChange(id:string,trading_company:string|null) {
-    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.$id===id?{...o,trading_company}:o);recalcGuestStock(n);return n}); return }
-    await databases.updateDocument(DB_ID,COLLECTIONS.MATERIAL_ORDERS,id,{trading_company}); await fetchData()
+    if (isSimulation) { setOrders(prev=>{const n=prev.map(o=>o.id===id?{...o,trading_company}:o);recalcGuestStock(n);return n}); return }
+    await fetch('/api/material-orders', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id, trading_company }) }); await fetchData()
   }
   async function handleDelete(id:string) {
-    if (isSimulation) { setOrders(prev=>{const n=prev.filter(o=>o.$id!==id);recalcGuestStock(n);return n}); return }
-    await databases.deleteDocument(DB_ID,COLLECTIONS.MATERIAL_ORDERS,id); await fetchData()
+    if (isSimulation) { setOrders(prev=>{const n=prev.filter(o=>o.id!==id);recalcGuestStock(n);return n}); return }
+    await fetch('/api/material-orders', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); await fetchData()
   }
 
   // ── FAX generation ────────────────────────────────────────────────────────
@@ -818,7 +816,7 @@ export default function MaterialPage() {
                           const cellOrders=matrix[group][d]??[]
                           return (
                             <td key={d} className="border-l border-gray-100 px-2 py-2 align-top min-w-[130px]">
-                              {cellOrders.length>0 ? <div>{cellOrders.map(o=><OrderCell key={o.$id} order={o} onClick={()=>setEditOrder(o)} onAllocate={()=>setAiOrder(o)}/>)}</div>
+                              {cellOrders.length>0 ? <div>{cellOrders.map(o=><OrderCell key={o.id} order={o} onClick={()=>setEditOrder(o)} onAllocate={()=>setAiOrder(o)}/>)}</div>
                                 : <button onClick={()=>setNewDialog({open:true,group,date:d})} className="w-full h-10 rounded-lg border border-dashed border-gray-200 text-gray-300 hover:border-blue-300 hover:text-blue-400 transition-colors text-lg">+</button>}
                             </td>
                           )

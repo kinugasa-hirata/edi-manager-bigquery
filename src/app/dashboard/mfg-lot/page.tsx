@@ -1,12 +1,10 @@
 ﻿'use client'
 
 import { useEffect, useState, useMemo, useRef } from 'react'
-import { databases, DB_ID, COLLECTIONS } from '@/lib/appwrite'
-import { Query } from 'appwrite'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Order {
-  $id: string
+  id: string
   product_code: string
   product_name: string
   group_name: string
@@ -17,7 +15,7 @@ interface Order {
 }
 
 interface ProductMaster {
-  $id: string
+  id: string
   product_code: string
   group_name: string
   weight_g: number | null
@@ -26,14 +24,14 @@ interface ProductMaster {
 }
 
 interface ProductionPlan {
-  $id: string
+  id: string
   product_code: string
   week_start_date: string
   planned_quantity: number
 }
 
 interface MaterialOrder {
-  $id: string
+  id: string
   material_name: string
   quantity_kg: number
   delivery_date: string
@@ -97,15 +95,15 @@ export default function MfgLotPage() {
     setLoading(true); setError('')
     try {
       const [oRes, pRes, ppRes, mRes] = await Promise.all([
-        databases.listDocuments(DB_ID, COLLECTIONS.ORDERS,          [Query.equal('status','active'), Query.limit(5000)]),
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCT_MASTER,  [Query.orderAsc('sort_order'), Query.limit(200)]),
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCTION_PLAN, [Query.limit(2000)]),
-        databases.listDocuments(DB_ID, COLLECTIONS.MATERIAL_ORDERS, [Query.limit(500)]),
+        fetch('/api/orders?status=active').then(r => r.json()),
+        fetch('/api/products').then(r => r.json()),
+        fetch('/api/production-plan').then(r => r.json()),
+        fetch('/api/material-orders').then(r => r.json()),
       ])
-      setOrders(oRes.documents as unknown as Order[])
-      setProducts(pRes.documents as unknown as ProductMaster[])
-      setProductionPlan(ppRes.documents as unknown as ProductionPlan[])
-      setMaterialOrders(mRes.documents as unknown as MaterialOrder[])
+      setOrders(oRes.data ?? [])
+      setProducts(pRes.data ?? [])
+      setProductionPlan(ppRes.data ?? [])
+      setMaterialOrders(mRes.data ?? [])
     } catch (e: any) { setError(e?.message ?? '読み込みに失敗しました')
     } finally { setLoading(false) }
   }
@@ -873,4 +871,3 @@ export default function MfgLotPage() {
       )}
     </div>
   )
-}

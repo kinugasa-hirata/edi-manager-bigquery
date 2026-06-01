@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server'
 import { BigQuery } from '@google-cloud/bigquery'
 
-const bigquery = new BigQuery({ projectId: 'my-test-app-498101' })
-const DATASET = 'my_app_db'
+const bq = new BigQuery({ projectId: 'my-test-app-498101' })
+const DS = 'my_app_db'
 
 export async function GET() {
-  const [rows] = await bigquery.query(
-    `SELECT * FROM \`my-test-app-498101.${DATASET}.product_master\` ORDER BY sort_order LIMIT 200`
-  )
-  return NextResponse.json({ data: rows })
+  try {
+    const [rows] = await bq.query({
+      query: `SELECT * FROM \`my-test-app-498101.${DS}.product_master\` ORDER BY sort_order LIMIT 200`,
+    })
+    return NextResponse.json({ data: rows })
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 })
+  }
 }

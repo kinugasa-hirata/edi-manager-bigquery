@@ -1,13 +1,11 @@
 ﻿'use client'
 
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { databases, DB_ID, COLLECTIONS } from '@/lib/appwrite'
-import { Query, ID, Permission, Role } from 'appwrite'
 import { useAuth } from '@/lib/auth-context'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ProductMaster {
-  $id: string
+  id: string
   product_code: string
   product_name?: string
   group_name: string
@@ -17,14 +15,14 @@ interface ProductMaster {
 }
 
 interface ProductionPlan {
-  $id: string
+  id: string
   product_code: string
   week_start_date: string
   planned_quantity: number
 }
 
 interface MaterialOrder {
-  $id: string
+  id: string
   material_name: string
   quantity_kg: number
   delivery_date: string
@@ -408,26 +406,18 @@ export default function ProductionPage() {
     setLoading(true)
     try {
       const [pRes, plRes, oRes, mRes] = await Promise.all([
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCT_MASTER, [
-          Query.orderAsc('sort_order'), Query.limit(100),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCTION_PLAN, [
-          Query.limit(2000),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.ORDERS, [
-          Query.equal('status', 'active'), Query.limit(2000),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.MATERIAL_ORDERS, [
-          Query.limit(500),
-        ]),
+        fetch('/api/products').then(r => r.json()),
+        fetch('/api/production-plan').then(r => r.json()),
+        fetch('/api/orders?status=active').then(r => r.json()),
+        fetch('/api/material-orders').then(r => r.json()),
       ])
-      setProducts(pRes.documents as unknown as ProductMaster[])
-      setPlans(plRes.documents as unknown as ProductionPlan[])
-      setMaterialOrders(mRes.documents as unknown as MaterialOrder[])
+      setProducts(pRes.data ?? [])
+      setPlans(plRes.data ?? [])
+      setMaterialOrders(mRes.data ?? [])
 
       const nm  = new Map<string, string>()
       const otm = new Map<string, number>()
-      for (const o of oRes.documents as any[]) {
+      for (const o of (oRes.data ?? []) as any[]) {
         if (o.product_name && !nm.has(o.product_code)) nm.set(o.product_code, o.product_name)
         otm.set(o.product_code, (otm.get(o.product_code) ?? 0) + (o.quantity ?? 0))
       }
@@ -601,7 +591,7 @@ export default function ProductionPage() {
     const normWeekStart = toDateStr(getMondayOf(new Date(weekStart + 'T00:00:00')))
     // Read from ref — no stale closure, no dependency on plans state
     const existing = plansRef.current.find(
-      p => p.product_code === productCode &&
+      (p: any) => p.product_code === productCode &&
         toDateStr(getMondayOf(new Date(p.week_start_date + 'T00:00:00'))) === normWeekStart,
     )
 
@@ -612,7 +602,7 @@ export default function ProductionPage() {
         toDateStr(getMondayOf(new Date(p.week_start_date + 'T00:00:00'))) === normWeekStart
       ))
       return quantity > 0
-        ? [...filtered, { $id: existing?.$id ?? 'temp', product_code: productCode, week_start_date: normWeekStart, planned_quantity: quantity }]
+        ? [...filtered, { id: existing?.id ?? 'temp', product_code: productCode, week_start_date: normWeekStart, planned_quantity: quantity }]
         : filtered
     })
 
@@ -621,20 +611,16 @@ export default function ProductionPage() {
       return { ok: true }
     }
 
-    // Attempt DB write
+    // Attempt DB write via API route
     try {
-      if (existing) {
-        if (quantity === 0) {
-          await databases.deleteDocument(DB_ID, COLLECTIONS.PRODUCTION_PLAN, existing.$id)
-        } else {
-          await databases.updateDocument(DB_ID, COLLECTIONS.PRODUCTION_PLAN, existing.$id, { planned_quantity: quantity })
-        }
-      } else if (quantity > 0) {
-        await databases.createDocument(
-          DB_ID, COLLECTIONS.PRODUCTION_PLAN, ID.unique(),
-          { product_code: productCode, week_start_date: normWeekStart, planned_quantity: quantity },
-          [Permission.read(Role.users()), Permission.update(Role.users()), Permission.delete(Role.users())]
-        )
+      const res = await fetch('/api/production-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_code: productCode, week_start_date: normWeekStart, planned_quantity: quantity }),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        throw new Error(d.error ?? '保存に失敗しました')
       }
       // Remove any previous failure for this cell on success
       setFailedSaves(prev => prev.filter(f => !(f.productCode === productCode && f.weekStart === normWeekStart)))
