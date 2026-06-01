@@ -1,7 +1,5 @@
 'use client'
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react'
-import { query, insert, table } from '@/lib/bigquery'
-import type { EdiRow } from '@/lib/edi-parser'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface DailyStock {
@@ -9,7 +7,6 @@ export interface DailyStock {
   calculatedAt: Date
 }
 
-// A material order as stored in context (subset of full type)
 export interface GuestMaterialOrder {
   $id: string
   material_name: string
@@ -25,11 +22,9 @@ interface StockContextType {
   dailyStock:          DailyStock | null
   setDailyStock:       (data: DailyStock) => void
   clearStock:          () => void
-  // Guest simulation orders — persisted across navigation
-  guestOrders:         GuestMaterialOrder[] | null  // null = not in guest mode yet
+  guestOrders:         GuestMaterialOrder[] | null
   setGuestOrders:      (orders: GuestMaterialOrder[]) => void
   clearGuestOrders:    () => void
-  // Recalculate stock using provided material orders (for guest simulation)
   recalcWithOrders:    (materialOrders: GuestMaterialOrder[]) => Promise<void>
 }
 
@@ -43,7 +38,7 @@ const StockContext = createContext<StockContextType>({
   recalcWithOrders: async () => {},
 })
 
-// ── Date helpers (timezone-safe) ──────────────────────────────────────────────
+// ── Date helpers ──────────────────────────────────────────────────────────────
 function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 }
@@ -82,32 +77,26 @@ function getWeekEndStr(mon: string): string {
   return mon
 }
 
-// ── Core stock calculation (material-aware) ────────────────────────────────────
-// Accepts optional materialOrders override — used for guest simulation.
-// When undefined, fetches from DB (normal authenticated mode).
+// ── Core stock calculation — fetches from Next.js API routes ──────────────────
 export async function calculateDailyStock(
   overrideMaterialOrders?: GuestMaterialOrder[]
 ): Promise<DailyStock | null> {
   try {
+    // Fetch orders, products, production plan in parallel
+    // Material orders: use override (guest mode) or fetch from API
     const [oRes, pRes, plRes, mRes] = await Promise.all([
-      databases.listDocuments(DB_ID, COLLECTIONS.ORDERS, [
-        Query.equal('status', 'active'), Query.limit(2000),
-      ]),
-      databases.listDocuments(DB_ID, COLLECTIONS.PRODUCT_MASTER, [
-        Query.orderAsc('sort_order'), Query.limit(200),
-      ]),
-      databases.listDocuments(DB_ID, COLLECTIONS.PRODUCTION_PLAN, [
-        Query.limit(2000),
-      ]),
+      fetch('/api/orders').then(r => r.json()),
+      fetch('/api/products').then(r => r.json()),
+      fetch('/api/production-plan').then(r => r.json()),
       overrideMaterialOrders
-        ? Promise.resolve({ documents: overrideMaterialOrders })
-        : databases.listDocuments(DB_ID, COLLECTIONS.MATERIAL_ORDERS, [Query.limit(500)]),
+        ? Promise.resolve({ data: overrideMaterialOrders })
+        : fetch('/api/material-orders').then(r => r.json()),
     ])
 
-    const orders         = oRes.documents as any[]
-    const products       = pRes.documents as any[]
-    const plans          = plRes.documents as any[]
-    const materialOrders = (mRes as any).documents as any[]
+    const orders         = (oRes.data ?? [])  as any[]
+    const products       = (pRes.data ?? [])  as any[]
+    const plans          = (plRes.data ?? []) as any[]
+    const materialOrders = (mRes.data ?? [])  as any[]
 
     const CONFIRMED         = new Set(['confirmed', 'delivery_confirmed'])
     const GROUP_ORDER_LOCAL = ['M90S', '300NP', '100G20', '950X01']
@@ -141,7 +130,7 @@ export async function calculateDailyStock(
       wm.set(o.material_name, (wm.get(o.material_name) ?? 0) + o.quantity_kg)
     }
 
-    // ── Production plan map (normalize week keys to Monday) ──────────────────
+    // ── Production plan map ───────────────────────────────────────────────────
     const planMap = new Map<string, Map<string, number>>()
     for (const p of plans) {
       const weekKey = getMondayStr(p.week_start_date)
@@ -162,7 +151,7 @@ export async function calculateDailyStock(
       shipMap.get(o.product_code)!.set(d, (shipMap.get(o.product_code)!.get(d) ?? 0) + o.quantity)
     }
 
-    // ── Cap production by available material (greedy by sort_order) ───────────
+    // ── Cap production by available material ──────────────────────────────────
     const effectivePlanMap = new Map<string, Map<string, number>>()
     const matBalance = new Map<string, number>(materialOpening)
 
@@ -236,7 +225,7 @@ export function StockProvider({ children }: { children: ReactNode }) {
   const clearGuestOrders = useCallback(() => setGuestOrdersState(null), [])
 
   const recalcWithOrders = useCallback(async (materialOrders: GuestMaterialOrder[]) => {
-    setGuestOrdersState(materialOrders)  // persist for navigation
+    setGuestOrdersState(materialOrders)
     const result = await calculateDailyStock(materialOrders)
     if (result) setDailyStockState(result)
   }, [])
