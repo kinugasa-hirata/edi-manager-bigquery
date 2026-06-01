@@ -1,7 +1,17 @@
 import { NextResponse } from 'next/server'
 import { BigQuery } from '@google-cloud/bigquery'
 
-const bq = new BigQuery({ projectId: 'my-test-app-498101' })
+function createClient() {
+  if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    return new BigQuery({
+      projectId: 'my-test-app-498101',
+      credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON),
+    })
+  }
+  return new BigQuery({ projectId: 'my-test-app-498101' })
+}
+
+const bq = createClient()
 const DS = 'my_app_db'
 
 export async function POST(req: Request) {

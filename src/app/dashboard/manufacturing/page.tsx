@@ -1,14 +1,12 @@
 ﻿'use client'
 
 import { useEffect, useState, useMemo } from 'react'
-import { databases, DB_ID, COLLECTIONS } from '@/lib/appwrite'
-import { Query } from 'appwrite'
 import * as XLSX from 'xlsx'
 import { useStock } from '@/lib/stock-context'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Order {
-  $id: string
+  id: string
   order_no: string
   product_code: string
   product_name: string
@@ -21,7 +19,7 @@ interface Order {
 }
 
 interface ProductMaster {
-  $id: string
+  id: string
   product_code: string
   group_name: string
   group_key: string
@@ -31,14 +29,14 @@ interface ProductMaster {
 }
 
 interface LotDef {
-  $id: string
+  id: string
   lot_id: string
   lot_label: string
   sort_order: number
 }
 
 interface ProductionPlan {
-  $id: string
+  id: string
   product_code: string
   week_start_date: string
   planned_quantity: number
@@ -162,27 +160,17 @@ export default function ManufacturingPage() {
     setLoading(true)
     try {
       const [oRes, pRes, lRes, plRes, mRes] = await Promise.all([
-        databases.listDocuments(DB_ID, COLLECTIONS.ORDERS, [
-          Query.equal('status', 'active'), Query.limit(1000),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCT_MASTER, [
-          Query.orderAsc('sort_order'), Query.limit(200),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.LOT_DEFINITIONS, [
-          Query.orderAsc('sort_order'), Query.limit(20),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.PRODUCTION_PLAN, [
-          Query.limit(2000),
-        ]),
-        databases.listDocuments(DB_ID, COLLECTIONS.MATERIAL_ORDERS, [
-          Query.limit(500),
-        ]),
+        fetch('/api/orders?status=active').then(r => r.json()),
+        fetch('/api/products').then(r => r.json()),
+        fetch('/api/lots').then(r => r.json()),
+        fetch('/api/production-plan').then(r => r.json()),
+        fetch('/api/material-orders').then(r => r.json()),
       ])
-      setOrders(oRes.documents as unknown as Order[])
-      setProducts(pRes.documents as unknown as ProductMaster[])
-      setLots(lRes.documents as unknown as LotDef[])
-      setProductionPlans(plRes.documents as unknown as ProductionPlan[])
-      setMaterialOrders(mRes.documents as any[])
+      setOrders(oRes.data ?? [])
+      setProducts(pRes.data ?? [])
+      setLots(lRes.data ?? [])
+      setProductionPlans(plRes.data ?? [])
+      setMaterialOrders(mRes.data ?? [])
     } catch (e) {
       console.error(e)
     } finally {
@@ -266,10 +254,10 @@ export default function ManufacturingPage() {
     for (const g of GROUP_ORDER_LOCAL) {
       const init = materialOrders
         .filter((o: any) => o.status === 'initial_stock' && o.material_name === g)
-        .sort((a: any, b: any) => b.delivery_date.localeCompare(a.delivery_date))[0]
+        .sort((a: any, b: any) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]
       const preConfirmed = materialOrders
         .filter((o: any) => o.material_name === g && CONFIRMED.has(o.status) &&
-          getMondayStr(o.delivery_date.slice(0, 10)) < firstWeek)
+          getMondayStr(toDateStr(o.delivery_date)) < firstWeek)
         .reduce((s: number, o: any) => s + o.quantity_kg, 0)
       matBalance.set(g, (init?.quantity_kg ?? 0) + preConfirmed)
     }
@@ -277,7 +265,7 @@ export default function ManufacturingPage() {
     const arrivals = new Map<string, Map<string, number>>()
     for (const o of materialOrders) {
       if (!CONFIRMED.has(o.status)) continue
-      const wk = getMondayStr(o.delivery_date.slice(0, 10))
+      const wk = getMondayStr(toDateStr(o.delivery_date))
       if (wk < firstWeek) continue
       if (!arrivals.has(wk)) arrivals.set(wk, new Map())
       arrivals.get(wk)!.set(o.material_name, (arrivals.get(wk)!.get(o.material_name) ?? 0) + o.quantity_kg)
@@ -463,7 +451,7 @@ export default function ManufacturingPage() {
     for (const g of GROUP_ORDER) {
       const entries = initEntries
         .filter((o: any) => o.material_name === g)
-        .sort((a: any, b: any) => b.delivery_date.localeCompare(a.delivery_date))
+        .sort((a: any, b: any) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))
       initialStock.set(g, entries.length > 0 ? entries[0].quantity_kg : 0)
     }
 
@@ -473,7 +461,7 @@ export default function ManufacturingPage() {
     for (const o of materialOrders as any[]) {
       if (o.status === 'initial_stock') continue
       if (!CONFIRMED_STATUSES.includes(o.status)) continue
-      const dateKey   = o.delivery_date?.slice(0, 10)
+      const dateKey   = toDateStr(o.delivery_date)
       if (!dateKey) continue
       const weekStart = getMondayStr(dateKey)
       if (weekStart < firstWeek) {
@@ -486,7 +474,7 @@ export default function ManufacturingPage() {
 
     for (const o of materialOrders as any[]) {
       if (o.status === 'initial_stock') continue
-      const dateKey = o.delivery_date?.slice(0, 10)
+      const dateKey = toDateStr(o.delivery_date)
       if (!dateKey) continue
       const weekStart = getMondayStr(dateKey)
       if (CONFIRMED_STATUSES.includes(o.status) && weekStart < firstWeek) continue
@@ -747,7 +735,7 @@ export default function ManufacturingPage() {
                     const rows = stockFlow.get(g) ?? []
                     const initKg = (materialOrders as any[])
                       .filter(o => o.status === 'initial_stock' && o.material_name === g)
-                      .sort((a: any, b: any) => b.delivery_date.localeCompare(a.delivery_date))[0]?.quantity_kg ?? 0
+                      .sort((a: any, b: any) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]?.quantity_kg ?? 0
                     return (
                       <>
                         <tr key={`${g}-in`} className={`border-b border-gray-100 ${gIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'}`}>
