@@ -6,11 +6,13 @@ const DS = 'my_app_db'
 
 export async function GET() {
   try {
+    // ORDER BY を外してシンプルにSELECT
     const [rows] = await bq.query({
-      query: `SELECT * FROM \`my-test-app-498101.${DS}.material_orders\` ORDER BY delivery_date LIMIT 500`,
+      query: `SELECT * FROM \`my-test-app-498101.${DS}.material_orders\` LIMIT 500`,
     })
     return NextResponse.json({ data: rows })
   } catch (e: any) {
+    console.error('[material-orders GET]', e.message)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
@@ -22,6 +24,7 @@ export async function POST(req: Request) {
     await bq.dataset(DS).table('material_orders').insert([{ id, ...body }])
     return NextResponse.json({ ok: true, id })
   } catch (e: any) {
+    console.error('[material-orders POST]', e.message)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
@@ -37,6 +40,7 @@ export async function PATCH(req: Request) {
     })
     return NextResponse.json({ ok: true })
   } catch (e: any) {
+    console.error('[material-orders PATCH]', e.message)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
@@ -50,6 +54,7 @@ export async function DELETE(req: Request) {
     })
     return NextResponse.json({ ok: true })
   } catch (e: any) {
+    console.error('[material-orders DELETE]', e.message)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
