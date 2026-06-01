@@ -95,11 +95,16 @@ function addDays(date: Date, n: number): Date {
   return d
 }
 
-function toDateStr(d: Date): string {
-  const y  = d.getFullYear()
-  const m  = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${dd}`
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    return val.getUTCFullYear() + '-' +
+      String(val.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(val.getUTCDate()).padStart(2, '0')
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
 }
 
 function formatWeek(monday: Date): string {
