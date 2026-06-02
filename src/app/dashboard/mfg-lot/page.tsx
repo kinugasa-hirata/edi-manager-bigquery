@@ -236,8 +236,9 @@ export default function MfgLotPage() {
       }
       if (demandByLot.size === 0) continue
 
-      // Running stock starts from initial_stock only
-      // Add production that completes BEFORE each LOT's earliest delivery date
+      // openingStock = initial_stock + all feasible (used for color % in cascade view)
+      const openingStock = (p.initial_stock ?? 0) + Array.from(feasibleByWeek.values()).reduce((s, v) => s + v, 0)
+      // Running stock starts from initial_stock only per LOT
       let running = (p.initial_stock ?? 0)
       const addedWeeks = new Set<string>()
       let breakPoint: number | null = null
