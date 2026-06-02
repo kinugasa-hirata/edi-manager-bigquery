@@ -38,8 +38,6 @@ interface MaterialOrder {
   trading_company: string | null
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 // ── BigQuery date helper ───────────────────────────────────────────────────
 function toDateStr(val: any): string {
   if (!val) return ''
@@ -65,13 +63,16 @@ const GROUP_COLORS: Record<string, { badge: string; header: string }> = {
 function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 }
-function addDays(s: string, n: number): string {
-  const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return localDateStr(d)
-}
 function getMondayStr(s: string): string {
   const d = new Date(s + 'T00:00:00')
   const diff = d.getDay() === 0 ? -6 : 1 - d.getDay()
   d.setDate(d.getDate() + diff)
+  return localDateStr(d)
+}
+// Get the Friday (or last business day) of a week given its Monday
+function getWeekEndStr(monday: string): string {
+  const d = new Date(monday + 'T00:00:00')
+  d.setDate(d.getDate() + 4) // Friday
   return localDateStr(d)
 }
 function generateWeeks(startDate: string, weeks: number): string[] {
@@ -135,7 +136,7 @@ export default function AllocationPage() {
       const wg  = weightMap.get(plan.product_code); const grp = groupMapL.get(plan.product_code)
       if (!wg || !grp) continue
       const kgUsed  = (plan.planned_quantity * wg) / 1000
-      const weekKey = getMondayStr(plan.week_start_date)
+      const weekKey = getMondayStr(toDateStr(plan.week_start_date))
       if (!weeklyConsumption.has(weekKey)) weeklyConsumption.set(weekKey, new Map())
       const wm = weeklyConsumption.get(weekKey)!
       wm.set(grp, (wm.get(grp) ?? 0) + kgUsed)
@@ -143,7 +144,7 @@ export default function AllocationPage() {
     const openingBalance = new Map<string, number>()
     for (const g of GROUP_ORDER) {
       const initE = materialOrders.filter(o => o.material_name === g && o.status === 'initial_stock')
-        .sort((a, b) => b.delivery_date.localeCompare(a.delivery_date))
+        .sort((a, b) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))
       openingBalance.set(g, initE[0]?.quantity_kg ?? 0)
     }
     for (const mo of materialOrders) {
@@ -219,6 +220,41 @@ export default function AllocationPage() {
 
   const productFlows = useMemo((): ProductFlow[] => {
     const result: ProductFlow[] = []
+
+    // Build material-constrained feasible production map: product_code -> week -> qty
+    const CONFIRMED_M = new Set(['confirmed', 'delivery_confirmed', 'initial_stock'])
+    const matPool = new Map<string, number>()
+    for (const g of GROUP_ORDER) {
+      matPool.set(g, materialOrders
+        .filter(mo => mo.material_name === g && CONFIRMED_M.has(mo.status))
+        .reduce((s, mo) => s + mo.quantity_kg, 0))
+    }
+    const allWeeks = Array.from(new Set(plans.map(pp => toDateStr(pp.week_start_date)))).sort()
+    const matUsed  = new Map<string, number>()
+    for (const g of GROUP_ORDER) matUsed.set(g, 0)
+
+    // feasibleMap: product_code -> week_start -> feasible_qty
+    const feasibleMap = new Map<string, Map<string, number>>()
+    for (const wk of allWeeks) {
+      const wkPlans = plans
+        .filter(pp => toDateStr(pp.week_start_date) === wk)
+        .sort((a, b) =>
+          (products.find(pr => pr.product_code === a.product_code)?.sort_order ?? 999) -
+          (products.find(pr => pr.product_code === b.product_code)?.sort_order ?? 999))
+      for (const pp of wkPlans) {
+        const pm2 = productMap.get(pp.product_code)
+        if (!pm2?.weight_g || !pm2.group_name) continue
+        const needed = (pp.planned_quantity * pm2.weight_g) / 1000
+        const pool   = matPool.get(pm2.group_name) ?? 0
+        const used   = matUsed.get(pm2.group_name) ?? 0
+        if (used + needed <= pool) {
+          matUsed.set(pm2.group_name, used + needed)
+          if (!feasibleMap.has(pp.product_code)) feasibleMap.set(pp.product_code, new Map())
+          feasibleMap.get(pp.product_code)!.set(wk, (feasibleMap.get(pp.product_code)!.get(wk) ?? 0) + pp.planned_quantity)
+        }
+      }
+    }
+
     for (const p of sortedProducts) {
       const pm = productMap.get(p.product_code); if (!pm) continue
       const demandMap = new Map<string, number>()
@@ -227,32 +263,35 @@ export default function AllocationPage() {
         demandMap.set(o.mfg_lot_no, (demandMap.get(o.mfg_lot_no) ?? 0) + o.quantity)
       }
       if (demandMap.size === 0) continue
-      const CONFIRMED_M = new Set(['confirmed', 'delivery_confirmed', 'initial_stock'])
-      const matPool = new Map<string, number>()
-      for (const g of GROUP_ORDER) {
-        matPool.set(g, materialOrders.filter(mo => mo.material_name === g && CONFIRMED_M.has(mo.status)).reduce((s, mo) => s + mo.quantity_kg, 0))
-      }
-      const allWeeks = Array.from(new Set(plans.map(pp => pp.week_start_date.slice(0, 10)))).sort()
-      const matUsed  = new Map<string, number>()
-      for (const g of GROUP_ORDER) matUsed.set(g, 0)
-      let feasible   = 0
-      for (const wk of allWeeks) {
-        const wkPlans = plans.filter(pp => pp.week_start_date.slice(0, 10) === wk)
-          .sort((a, b) => (products.find(pr => pr.product_code === a.product_code)?.sort_order ?? 999) - (products.find(pr => pr.product_code === b.product_code)?.sort_order ?? 999))
-        for (const pp of wkPlans) {
-          const pm2 = productMap.get(pp.product_code); if (!pm2?.weight_g || !pm2.group_name) continue
-          const needed = (pp.planned_quantity * pm2.weight_g) / 1000
-          const pool   = matPool.get(pm2.group_name) ?? 0, used = matUsed.get(pm2.group_name) ?? 0
-          if (used + needed <= pool) {
-            matUsed.set(pm2.group_name, used + needed)
-            if (pp.product_code === p.product_code) feasible += pp.planned_quantity
+
+      const pFeasible = feasibleMap.get(p.product_code) ?? new Map<string, number>()
+
+      // Running stock starts from initial_stock only
+      let runningStock = pm.initial_stock ?? 0
+      // Track which weeks have already been added to runningStock
+      const addedWeeks = new Set<string>()
+
+      const lots: LotFlow[] = []
+      let totalShortageKg   = 0
+
+      for (const lot of mfgLots) {
+        const demand = demandMap.get(lot) ?? 0
+        if (demand === 0) continue
+
+        const lotStart = mfgLotRanges.get(lot)?.start ?? ''
+
+        // Add production completed BEFORE this LOT's first delivery date
+        // Week end (Friday) = monday + 4 days
+        for (const [wk, qty] of pFeasible) {
+          if (addedWeeks.has(wk)) continue
+          const weekEnd = getWeekEndStr(wk)
+          // If the week ends before the lot's first delivery, production is ready
+          if (weekEnd < lotStart) {
+            runningStock += qty
+            addedWeeks.add(wk)
           }
         }
-      }
-      let runningStock = (pm.initial_stock ?? 0) + feasible
-      const lots: LotFlow[] = []; let totalShortageKg = 0
-      for (const lot of mfgLots) {
-        const demand = demandMap.get(lot) ?? 0; if (demand === 0) continue
+
         const openingStock  = runningStock
         const shortageUnits = openingStock >= demand ? 0 : openingStock > 0 ? demand - openingStock : demand
         const shortageKg    = pm.weight_g ? (shortageUnits * pm.weight_g) / 1000 : 0
@@ -261,10 +300,18 @@ export default function AllocationPage() {
         lots.push({ mfgLot: lot, openingStock, demand, shortageUnits, shortageKg, demandKg })
         runningStock -= demand
       }
-      if (lots.length > 0) result.push({ productCode: p.product_code, productName: nameMap.get(p.product_code) ?? '', groupName: p.group_name, weightG: pm.weight_g, lots, totalShortageKg })
+
+      if (lots.length > 0) result.push({
+        productCode:  p.product_code,
+        productName:  nameMap.get(p.product_code) ?? '',
+        groupName:    p.group_name,
+        weightG:      pm.weight_g,
+        lots,
+        totalShortageKg,
+      })
     }
     return result
-  }, [sortedProducts, productMap, orders, mfgLots, nameMap, materialOrders, plans, products])
+  }, [sortedProducts, productMap, orders, mfgLots, mfgLotRanges, nameMap, materialOrders, plans, products])
 
   const groupSummary = useMemo(() => {
     const result = new Map<string, { totalShortageKg: number; shortCount: number; lotMap: Map<string, { shortageKg: number; shortCount: number }> }>()
