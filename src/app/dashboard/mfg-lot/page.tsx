@@ -200,14 +200,15 @@ export default function MfgLotPage() {
           .reduce((s, mo) => s + mo.quantity_kg, 0))
       }
 
-      const allWeeks = Array.from(new Set(productionPlan.map(pp => pp ? toDateStr(pp.week_start_date) : ''))).sort()
+      const allWeeks = Array.from(new Set(productionPlan.filter(pp => pp).map(pp => toDateStr(pp.week_start_date)))).sort()
       const materialUsed = new Map<string, number>()
       for (const g of ['M90S','300NP','100G20','950X01']) materialUsed.set(g, 0)
 
-      let feasibleTotal = 0
+      // Build feasible production map: week -> qty (material-constrained)
+      const feasibleByWeek = new Map<string, number>()
       for (const wk of allWeeks) {
         const wkPlans = productionPlan
-          .filter(pp => pp ? toDateStr(pp.week_start_date) : '' === wk)
+          .filter(pp => pp && toDateStr(pp.week_start_date) === wk)
           .sort((a, b) => {
             const pa = products.find(pr => pr.product_code === a.product_code)
             const pb = products.find(pr => pr.product_code === b.product_code)
@@ -221,11 +222,12 @@ export default function MfgLotPage() {
           const used   = materialUsed.get(pm.group_name) ?? 0
           if (used + needed <= pool) {
             materialUsed.set(pm.group_name, used + needed)
-            if (pp.product_code === p.product_code) feasibleTotal += pp.planned_quantity
+            if (pp.product_code === p.product_code) {
+              feasibleByWeek.set(wk, (feasibleByWeek.get(wk) ?? 0) + pp.planned_quantity)
+            }
           }
         }
       }
-      const openingStock = (p.initial_stock ?? 0) + feasibleTotal
 
       const demandByLot = new Map<string, number>()
       for (const o of orders) {
@@ -234,13 +236,30 @@ export default function MfgLotPage() {
       }
       if (demandByLot.size === 0) continue
 
-      let running = openingStock
+      // Running stock starts from initial_stock only
+      // Add production that completes BEFORE each LOT's earliest delivery date
+      let running = (p.initial_stock ?? 0)
+      const addedWeeks = new Set<string>()
       let breakPoint: number | null = null
       const lotRows: LotRow[] = []
 
       for (const { mfgLot, earliestDate } of mfgLotSequence) {
         const demand = demandByLot.get(mfgLot) ?? 0
         if (demand === 0) continue
+
+        // Add feasible production whose week ends before this LOT's earliest date
+        for (const [wk, qty] of feasibleByWeek) {
+          if (addedWeeks.has(wk)) continue
+          // Week end = Monday + 4 days (Friday)
+          const wkDate = new Date(wk + 'T00:00:00')
+          wkDate.setDate(wkDate.getDate() + 4)
+          const weekEnd = localDateStr(wkDate)
+          if (weekEnd < earliestDate) {
+            running += qty
+            addedWeeks.add(wk)
+          }
+        }
+
         const opening = running, closing = opening - demand, covered = closing >= 0
         if (!covered && breakPoint === null) breakPoint = lotRows.length
         lotRows.push({ mfgLot, earliestDate, demand, opening, closing, covered })

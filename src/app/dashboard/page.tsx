@@ -1,7 +1,6 @@
 ﻿'use client'
 
 import { useEffect, useState, useMemo } from 'react'
-import { query, table } from '@/lib/bigquery'
 import * as XLSX from 'xlsx'
 
 interface Order {
@@ -171,7 +170,7 @@ export default function DashboardPage() {
     setError('')
     try {
       const [oRows, pRows, lRows, ppRows, mRows] = await Promise.all([
-        fetch('/api/orders').then(r => r.json()),
+        fetch('/api/orders?status=active').then(r => r.json()),
         fetch('/api/products').then(r => r.json()),
         fetch('/api/lots').then(r => r.json()),
         fetch('/api/production-plan').then(r => r.json()),
@@ -327,9 +326,9 @@ export default function DashboardPage() {
 
       for (let li = 0; li < activeLots.length; li++) {
         const lot      = activeLots[li]
-        const lotStart = lot.start_from.slice(0, 10)
+        const lotStart = lot.start_from ? String(lot.start_from).slice(0, 10) : ''
         const lotEnd   = li + 1 < activeLots.length
-          ? activeLots[li + 1].start_from.slice(0, 10)
+          ? String(activeLots[li + 1].start_from).slice(0, 10)
           : '2099-12-31'
 
         // Fold in feasible production arriving BEFORE this LOT starts
@@ -466,7 +465,7 @@ export default function DashboardPage() {
                     <th key={l.lot_id} className="px-2 py-2.5 text-center font-medium border-r border-gray-600 whitespace-nowrap min-w-[90px]">
                       <div>{l.lot_label}</div>
                       <div className="text-[10px] opacity-50 font-normal">
-                        {new Date(l.start_from).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}〜
+                        {(() => { const d = new Date(String(l.start_from).slice(0,10) + 'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}`; })()}〜
                       </div>
                     </th>
                   ))}
