@@ -100,8 +100,16 @@ function getWeekEndStr(mondayStr: string): string {
   return mondayStr
 }
 
-function toDateStr(iso: string): string {
-  return iso ? iso.slice(0, 10) : ''
+function toDateStr(val: any): string {
+  if (!val) return ''
+  if (typeof val === 'string') return val.slice(0, 10)
+  if (val instanceof Date) {
+    return val.getUTCFullYear() + '-' +
+      String(val.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(val.getUTCDate()).padStart(2, '0')
+  }
+  if (val.value) return String(val.value).slice(0, 10)
+  return String(val).slice(0, 10)
 }
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00')
