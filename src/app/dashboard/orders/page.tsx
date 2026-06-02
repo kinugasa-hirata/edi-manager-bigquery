@@ -295,9 +295,8 @@ export default function OrdersPage() {
       const dateA = toDateStr(a.delivery_date)
       const dateB = toDateStr(b.delivery_date)
       if (dateA !== dateB) return dateA.localeCompare(dateB)
-      const mfgA = mfgLotSortOrder.get(a.mfg_lot_no) ?? a.mfg_lot_no ?? ''
-      const mfgB = mfgLotSortOrder.get(b.mfg_lot_no) ?? b.mfg_lot_no ?? ''
-      return mfgA.localeCompare(mfgB)
+      // Same date: sort by order_no (consistent with old Appwrite version)
+      return (a.order_no ?? '').localeCompare(b.order_no ?? '')
     })
 
     const headers = ['注文番号', '品番', '品名', 'グループ', 'LOT', '納期', '数量', '重量(g)', '製造番号']
@@ -401,6 +400,214 @@ export default function OrdersPage() {
       return ws
     }
 
+
+    // ── 材料入荷予定 sheet ──────────────────────────────────────────────────
+    function createMaterialSheet(): XLSX.WorkSheet {
+      const rows: any[][] = []
+      rows.push(['【原材料発注リスト】'])
+      rows.push(['原材料', '発注先', '数量(kg)', '入荷予定日', 'ステータス'])
+      const STATUS_LABELS: Record<string, string> = {
+        'initial_stock': '初期在庫', 'pending': '保留中', 'ordered': '発注済・確認待',
+        'confirmed': '確認済', 'delivery_confirmed': '納入確定', 'delayed': '遅延',
+      }
+      const sortedMat = [...materialOrders].sort((a, b) => {
+        if (a.material_name !== b.material_name)
+          return GROUP_ORDER.indexOf(a.material_name) - GROUP_ORDER.indexOf(b.material_name)
+        return toDateStr(a.delivery_date).localeCompare(toDateStr(b.delivery_date))
+      })
+      for (const mo of sortedMat) {
+        if (mo.status === 'initial_stock') continue
+        const rawDate = toDateStr(mo.delivery_date)
+        const dateStr = rawDate ? rawDate.replace(/-/g, '/') : ''
+        rows.push([mo.material_name, mo.trading_company ?? '—', mo.quantity_kg, dateStr, STATUS_LABELS[mo.status] ?? mo.status])
+      }
+      rows.push([])
+      rows.push(['【初期在庫（原材料）】'])
+      rows.push(['原材料', '初期在庫(kg)', '基準日'])
+      for (const g of GROUP_ORDER) {
+        const initRow = materialOrders
+          .filter(mo => mo.material_name === g && mo.status === 'initial_stock')
+          .sort((a, b) => toDateStr(b.delivery_date).localeCompare(toDateStr(a.delivery_date)))[0]
+        if (initRow) {
+          rows.push([g, initRow.quantity_kg, toDateStr(initRow.delivery_date).replace(/-/g, '/')])
+        } else {
+          rows.push([g, 0, '—'])
+        }
+      }
+      rows.push([])
+      const todayDate = new Date()
+      const dow = todayDate.getDay()
+      const diffToMonday = dow === 0 ? -6 : 1 - dow
+      const thisMonday = new Date(todayDate)
+      thisMonday.setDate(todayDate.getDate() + diffToMonday)
+      const lastCompletedMondayStr = `${thisMonday.getFullYear()}-${String(thisMonday.getMonth()+1).padStart(2,'0')}-${String(thisMonday.getDate()).padStart(2,'0')}`
+      rows.push(['【材料グループ別 確定在庫合計】'])
+      rows.push(['原材料', '初期在庫(kg)', '入荷済(kg)', '合計(kg)', `製造消費済(kg)〜${lastCompletedMondayStr}`, '現時点残在庫(kg)', '備考'])
+      const productionConsumptionByGroup = new Map<string, number>()
+      for (const g of GROUP_ORDER) productionConsumptionByGroup.set(g, 0)
+      for (const pl of plans) {
+        const planWeekStr = toDateStr(pl.week_start_date)
+        if (planWeekStr > lastCompletedMondayStr) continue
+        const pm = productMap.get(pl.product_code)
+        if (!pm?.weight_g || !pm.group_name) continue
+        const kg = (pl.planned_quantity * pm.weight_g) / 1000
+        productionConsumptionByGroup.set(pm.group_name, (productionConsumptionByGroup.get(pm.group_name) ?? 0) + kg)
+      }
+      for (const g of GROUP_ORDER) {
+        const cutoffDate = new Date()
+        const dowC = cutoffDate.getDay()
+        cutoffDate.setDate(cutoffDate.getDate() + (dowC === 0 ? 5 : 6 - dowC) + 1)
+        const cutoffStr = cutoffDate.toISOString().slice(0, 10)
+        const initKg = materialOrders.filter(mo => mo.material_name === g && mo.status === 'initial_stock').reduce((s, mo) => s + mo.quantity_kg, 0)
+        const confirmedKg = materialOrders.filter(mo => mo.material_name === g && (mo.status === 'confirmed' || mo.status === 'delivery_confirmed') && toDateStr(mo.delivery_date) <= cutoffStr).reduce((s, mo) => s + mo.quantity_kg, 0)
+        const futureConfirmedKg = materialOrders.filter(mo => mo.material_name === g && (mo.status === 'confirmed' || mo.status === 'delivery_confirmed') && toDateStr(mo.delivery_date) > cutoffStr).reduce((s, mo) => s + mo.quantity_kg, 0)
+        const pendingKg = materialOrders.filter(mo => mo.material_name === g && mo.status === 'ordered').reduce((s, mo) => s + mo.quantity_kg, 0)
+        const totalKg = initKg + confirmedKg
+        const consumptionKg = Math.round((productionConsumptionByGroup.get(g) ?? 0) * 10) / 10
+        const remainingKg   = Math.round((totalKg - consumptionKg) * 10) / 10
+        rows.push([g, initKg, confirmedKg, totalKg, consumptionKg, remainingKg,
+          [pendingKg > 0 ? `発注中: ${pendingKg}kg（未確定）` : '', futureConfirmedKg > 0 ? `確定入荷待ち: ${futureConfirmedKg}kg` : ''].filter(Boolean).join(' / ') || ''])
+      }
+      const ws = XLSX.utils.aoa_to_sheet(rows)
+      const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
+      for (let r = 0; r <= range.e.r; r++) {
+        for (let c = 0; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })]
+          if (!cell) continue
+          if (typeof cell.v === 'number' && cell.t !== 'd') cell.z = '#,##0.0'
+        }
+      }
+      ws['!cols'] = [{wch:10},{wch:16},{wch:14},{wch:14},{wch:18},{wch:16},{wch:22}]
+      return ws
+    }
+
+    // ── 初期在庫計算 sheet ──────────────────────────────────────────────────
+    function createInitialStockSheet(): XLSX.WorkSheet {
+      const getMondayStr = (dateStr: string): string => {
+        const d = new Date(dateStr + 'T00:00:00')
+        const dow = d.getDay()
+        const diff = dow === 0 ? -6 : 1 - dow
+        d.setDate(d.getDate() + diff)
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      }
+      const getWeekEndStr = (monday: string): string => {
+        for (let i = 4; i >= 0; i--) {
+          const d = new Date(monday + 'T00:00:00'); d.setDate(d.getDate() + i)
+          const dow = d.getDay()
+          if (dow !== 0 && dow !== 6) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+        }
+        return monday
+      }
+      const formatWeekLabel = (monday: string): string => {
+        const end = getWeekEndStr(monday)
+        const m1 = new Date(monday + 'T00:00:00').getMonth() + 1, d1 = new Date(monday + 'T00:00:00').getDate()
+        const m2 = new Date(end + 'T00:00:00').getMonth() + 1,   d2 = new Date(end + 'T00:00:00').getDate()
+        return m1 === m2 ? `${m1}/${d1}–${d2}` : `${m1}/${d1}–${m2}/${d2}`
+      }
+      const weekSet = new Set<string>()
+      for (const pl of plans) weekSet.add(getMondayStr(toDateStr(pl.week_start_date)))
+      const allWeeks = Array.from(weekSet).sort()
+      const planMapLocal = new Map<string, Map<string, number>>()
+      for (const pl of plans) {
+        const wk = getMondayStr(toDateStr(pl.week_start_date))
+        if (!planMapLocal.has(pl.product_code)) planMapLocal.set(pl.product_code, new Map())
+        planMapLocal.get(pl.product_code)!.set(wk, pl.planned_quantity)
+      }
+      const feasiblePerWeek = new Map<string, Map<string, number>>()
+      for (const pm of products) {
+        if (!selGroups.has(pm.group_name)) continue
+        const pc = pm.product_code
+        const pPlanMap = planMapLocal.get(pc)
+        if (!pPlanMap || pPlanMap.size === 0) continue
+        const pDailyMap = dailyStock?.byProduct.get(pc)
+        const initStock = pm.initial_stock ?? 0
+        const wkMap = new Map<string, number>()
+        if (pDailyMap && pDailyMap.size > 0) {
+          const sortedDates = Array.from(pDailyMap.keys()).sort()
+          for (const wk of allWeeks) {
+            const planned = pPlanMap.get(wk) ?? 0
+            if (planned === 0) { wkMap.set(wk, 0); continue }
+            const wkEnd = getWeekEndStr(wk)
+            const endStock = pDailyMap.get(wkEnd) ?? (() => { const b = sortedDates.filter(d => d <= wkEnd); return b.length > 0 ? pDailyMap.get(b[b.length-1])! : null })()
+            const prevWeekEnd = allWeeks.indexOf(wk) > 0 ? getWeekEndStr(allWeeks[allWeeks.indexOf(wk)-1]) : null
+            const prevStock = prevWeekEnd ? (pDailyMap.get(prevWeekEnd) ?? (() => { const b = sortedDates.filter(d => d <= prevWeekEnd); return b.length > 0 ? pDailyMap.get(b[b.length-1])! : initStock })()) : initStock
+            const wkShipments = orders.filter(o => o.product_code === pc && o.status === 'active' && toDateStr(o.delivery_date) >= wk && toDateStr(o.delivery_date) <= wkEnd).reduce((s, o) => s + (o.quantity ?? 0), 0)
+            if (endStock !== null) {
+              wkMap.set(wk, Math.max(0, Math.min(planned, Math.round((endStock - prevStock) + wkShipments))))
+            } else { wkMap.set(wk, planned) }
+          }
+        } else {
+          for (const wk of allWeeks) wkMap.set(wk, pPlanMap.get(wk) ?? 0)
+        }
+        feasiblePerWeek.set(pc, wkMap)
+      }
+      const nameMapLocal = new Map<string, string>()
+      for (const o of orders) { if (o.product_name && !nameMapLocal.has(o.product_code)) nameMapLocal.set(o.product_code, o.product_name) }
+      const sheetProducts = products
+        .filter(p => selGroups.has(p.group_name) && p.initial_stock !== null)
+        .sort((a, b) => { const ga = GROUP_ORDER.indexOf(a.group_name), gb = GROUP_ORDER.indexOf(b.group_name); if (ga !== gb) return ga - gb; return a.sort_order - b.sort_order })
+      const relevantWeeks = allWeeks.filter(wk => sheetProducts.some(p => (planMapLocal.get(p.product_code)?.get(wk) ?? 0) > 0))
+      const headerRow = ['品番', '品名', '初期在庫', ...relevantWeeks.map(formatWeekLabel), '合計製造', '在庫合計', '未確定計画']
+      const dataRows: any[][] = sheetProducts.map(pm => {
+        const pc = pm.product_code, initStock = pm.initial_stock ?? 0
+        const wkFeasible = feasiblePerWeek.get(pc), pPlanMap = planMapLocal.get(pc)
+        const weekCells = relevantWeeks.map(wk => {
+          const planned = pPlanMap?.get(wk) ?? 0, feasible = wkFeasible?.get(wk) ?? 0
+          const infeasible = Math.max(0, planned - feasible)
+          if (planned === 0) return null
+          if (infeasible === 0) return feasible
+          if (feasible === 0) return `(${infeasible.toLocaleString()})`
+          return `${feasible.toLocaleString()} (${infeasible.toLocaleString()})`
+        })
+        const totalFeasible = relevantWeeks.reduce((s, wk) => s + (wkFeasible?.get(wk) ?? 0), 0)
+        const totalInfeasible = relevantWeeks.reduce((s, wk) => { const p = pPlanMap?.get(wk) ?? 0, f = wkFeasible?.get(wk) ?? 0; return s + Math.max(0, p - f) }, 0)
+        return [pc, nameMapLocal.get(pc) ?? '', initStock, ...weekCells, totalFeasible || null, initStock + totalFeasible, totalInfeasible > 0 ? `(${totalInfeasible.toLocaleString()})` : null]
+      })
+      const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows])
+      const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
+      for (let r = 1; r <= range.e.r; r++) {
+        for (let c = 2; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })]
+          if (cell && typeof cell.v === 'number') cell.z = '#,##0'
+        }
+      }
+      ws['!cols'] = [{wch:22},{wch:20},{wch:10},...relevantWeeks.map(() => ({wch:12})),{wch:10},{wch:10},{wch:12}]
+      return ws
+    }
+
+    // ── 在庫枯渇サマリー sheet ──────────────────────────────────────────────
+    function createRunoutSheet(): XLSX.WorkSheet {
+      const byProduct = new Map<string, Order[]>()
+      for (const o of sorted) { if (!byProduct.has(o.product_code)) byProduct.set(o.product_code, []); byProduct.get(o.product_code)!.push(o) }
+      const productCodes = [...byProduct.keys()].sort((a, b) => {
+        const oa = sorted.find(o => o.product_code === a), ob = sorted.find(o => o.product_code === b)
+        const ga = GROUP_ORDER.indexOf(oa?.group_name ?? ''), gb = GROUP_ORDER.indexOf(ob?.group_name ?? '')
+        if (ga !== gb) return ga - gb; return a.localeCompare(b)
+      })
+      const headerRow = ['グループ', '品番', '品名', '枯渇注文番号', '枯渇納期', '製造番号(枯渇時)']
+      const dataRows: any[][] = []
+      for (const pc of productCodes) {
+        const pOrders = byProduct.get(pc)!, group = pOrders[0]?.group_name ?? '', name = pOrders[0]?.product_name ?? ''
+        const starting = getStartingStock(pc) ?? 0
+        let running = starting, runoutOrder: Order | null = null
+        for (const o of pOrders) { running -= (o.quantity ?? 0); if (running < 0 && runoutOrder === null) runoutOrder = o }
+        if (runoutOrder) {
+          const deliveryDate = toDateStr(runoutOrder.delivery_date)
+          const deliveryCell = deliveryDate ? new Date(deliveryDate + 'T00:00:00') : ''
+          dataRows.push([group, pc, name, runoutOrder.order_no, deliveryCell, runoutOrder.mfg_lot_no ?? ''])
+        }
+      }
+      dataRows.sort((a, b) => { const aD = a[4] instanceof Date ? a[4].getTime() : 0, bD = b[4] instanceof Date ? b[4].getTime() : 0; return aD - bD })
+      const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows])
+      const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
+      for (let r = 1; r <= range.e.r; r++) {
+        const dateCell = ws[XLSX.utils.encode_cell({ r, c: 4 })]
+        if (dateCell && dateCell.v instanceof Date) { dateCell.t = 'd'; dateCell.z = 'yyyy/mm/dd' }
+      }
+      ws['!cols'] = [{wch:8},{wch:22},{wch:18},{wch:16},{wch:14},{wch:14}]
+      return ws
+    }
+
     if (splitByProduct) {
       const byProduct = new Map<string, Order[]>()
       for (const o of sorted) {
@@ -416,6 +623,9 @@ export default function OrdersPage() {
         if (ga !== gb) return ga - gb
         return (oa?.product_code ?? '').localeCompare(ob?.product_code ?? '')
       })
+      XLSX.utils.book_append_sheet(wb, createRunoutSheet(),        '在庫枯渇サマリー')
+      XLSX.utils.book_append_sheet(wb, createInitialStockSheet(),   '初期在庫計算')
+      XLSX.utils.book_append_sheet(wb, createMaterialSheet(),       '材料入荷予定')
       for (const pname of productOrder) {
         const pOrders  = byProduct.get(pname)!
         const safeName = pname.replace(/[\\/*?[\]:]/g, '_').slice(0, 28)
@@ -424,6 +634,9 @@ export default function OrdersPage() {
       XLSX.utils.book_append_sheet(wb, createSheet(sorted), '全件')
       XLSX.writeFile(wb, `注文一覧_品名別_${date}.xlsx`)
     } else {
+      XLSX.utils.book_append_sheet(wb, createRunoutSheet(),        '在庫枯渇サマリー')
+      XLSX.utils.book_append_sheet(wb, createInitialStockSheet(),   '初期在庫計算')
+      XLSX.utils.book_append_sheet(wb, createMaterialSheet(),       '材料入荷予定')
       XLSX.utils.book_append_sheet(wb, createSheet(sorted), '注文一覧')
       XLSX.writeFile(wb, `注文一覧_${date}.xlsx`)
     }
