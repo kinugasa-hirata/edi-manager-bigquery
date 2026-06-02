@@ -45,14 +45,13 @@ function assignLot(deliveryDate: string, lots: LotDefinition[]): string {
   return '範囲外'
 }
 
-// ── 0502 Normal ───────────────────────────────────────────────────────────────
-export async function processNormalEdi(
+// ── Build payload rows ────────────────────────────────────────────────────────
+function buildPayload(
   rows: EdiRow[],
   products: ProductMaster[],
   lots: LotDefinition[],
   sourceFile: string,
-  onProgress?: (n: number) => void
-): Promise<{ inserted: number; updated: number; skipped: number }> {
+): any[] {
   const productMap = new Map(products.map(p => [p.product_code, p]))
   const cutoff     = '2026-04-01'
 
@@ -62,7 +61,7 @@ export async function processNormalEdi(
     return toDateStr(r.delivery_date) >= cutoff
   })
 
-  const payload = validRows.map(r => {
+  return validRows.map(r => {
     const product = productMap.get(r.product_code)!
     return {
       order_no:      r.order_no,
@@ -71,7 +70,7 @@ export async function processNormalEdi(
       group_name:    product.group_name,
       lot_number:    assignLot(r.delivery_date, lots),
       delivery_date: r.delivery_date ? r.delivery_date.slice(0, 10) : null,
-      order_date:    r.order_date || null,
+      order_date:    r.order_date    ? r.order_date.slice(0, 10)    : null,
       quantity:      r.quantity,
       unit_price:    r.unit_price,
       amount:        r.amount,
@@ -81,33 +80,53 @@ export async function processNormalEdi(
       source_file:   sourceFile,
     }
   })
-
-  if (onProgress) onProgress(validRows.length)
-
-  const res  = await fetch('/api/edi/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'upsert_orders', rows: payload }),
-  })
-  const data = await res.json()
-  return { inserted: data.inserted ?? 0, updated: data.updated ?? 0, skipped: data.skipped ?? 0 }
 }
 
-// ── 0504 Torikeshi ────────────────────────────────────────────────────────────
-export async function processCancelEdi(
-  rows: EdiRow[],
-  onProgress?: (n: number) => void
-): Promise<{ cancelled: number; notFound: number }> {
-  const orderNos = rows.map(r => r.order_no).filter(Boolean)
-  if (onProgress) onProgress(orderNos.length)
+// ── POST to API in chunks to avoid timeout ────────────────────────────────────
+async function postInChunks(
+  action: string,
+  rows: any[],
+  chunkSize = 50,
+): Promise<{ inserted: number; updated: number; skipped: number; cancelled: number; notFound: number }> {
+  let inserted = 0, updated = 0, skipped = 0, cancelled = 0, notFound = 0
 
-  const res  = await fetch('/api/edi/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'cancel_orders', rows: orderNos }),
-  })
-  const data = await res.json()
-  return { cancelled: data.cancelled ?? 0, notFound: data.notFound ?? 0 }
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize)
+    const res   = await fetch('/api/edi/upload', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ action, rows: chunk }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error(`[postInChunks] ${action} chunk ${i} failed:`, err)
+      skipped += chunk.length
+      continue
+    }
+    const data = await res.json()
+    inserted  += data.inserted  ?? 0
+    updated   += data.updated   ?? 0
+    skipped   += data.skipped   ?? 0
+    cancelled += data.cancelled ?? 0
+    notFound  += data.notFound  ?? 0
+  }
+
+  return { inserted, updated, skipped, cancelled, notFound }
+}
+
+// ── 0502 Normal ───────────────────────────────────────────────────────────────
+export async function processNormalEdi(
+  rows: EdiRow[],
+  products: ProductMaster[],
+  lots: LotDefinition[],
+  sourceFile: string,
+  onProgress?: (n: number) => void,
+): Promise<{ inserted: number; updated: number; skipped: number }> {
+  const payload = buildPayload(rows, products, lots, sourceFile)
+  if (onProgress) onProgress(payload.length)
+
+  const result = await postInChunks('upsert_orders', payload, 50)
+  return { inserted: result.inserted, updated: result.updated, skipped: result.skipped }
 }
 
 // ── 0503 Henkou ───────────────────────────────────────────────────────────────
@@ -116,10 +135,22 @@ export async function processHenkouEdi(
   products: ProductMaster[],
   lots: LotDefinition[],
   sourceFile: string,
-  onProgress?: (n: number) => void
+  onProgress?: (n: number) => void,
 ): Promise<{ updated: number; inserted: number; skipped: number }> {
   const result = await processNormalEdi(rows, products, lots, sourceFile, onProgress)
   return { updated: result.updated, inserted: result.inserted, skipped: result.skipped }
+}
+
+// ── 0504 Torikeshi ────────────────────────────────────────────────────────────
+export async function processCancelEdi(
+  rows: EdiRow[],
+  onProgress?: (n: number) => void,
+): Promise<{ cancelled: number; notFound: number }> {
+  const orderNos = rows.map(r => r.order_no).filter(Boolean)
+  if (onProgress) onProgress(orderNos.length)
+
+  const result = await postInChunks('cancel_orders', orderNos, 50)
+  return { cancelled: result.cancelled, notFound: result.notFound }
 }
 
 // ── Upload Log ────────────────────────────────────────────────────────────────
@@ -130,8 +161,8 @@ export async function writeUploadLog(data: {
   uploaded_by: string; status: string; error_message?: string
 }) {
   await fetch('/api/edi/upload', {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'write_log', rows: data }),
+    body:    JSON.stringify({ action: 'write_log', rows: data }),
   })
 }
