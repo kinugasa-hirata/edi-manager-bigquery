@@ -70,7 +70,7 @@ export async function processNormalEdi(
       product_name:  r.product_name,
       group_name:    product.group_name,
       lot_number:    assignLot(r.delivery_date, lots),
-      delivery_date: r.delivery_date ? new Date(r.delivery_date).toISOString() : null,
+      delivery_date: r.delivery_date ? r.delivery_date.slice(0, 10) : null,
       order_date:    r.order_date || null,
       quantity:      r.quantity,
       unit_price:    r.unit_price,
