@@ -19,7 +19,7 @@ function esc(v: unknown): string {
 function dateOrNull(v: unknown): string {
   if (!v) return 'NULL'
   const s = String(v).slice(0, 10)
-  return s.length === 10 ? `DATE '${s}'` : 'NULL'
+  return s.length === 10 ? `TIMESTAMP '${s} 00:00:00'` : 'NULL'
 }
 
 // ── POST ─────────────────────────────────────────────────────────────────────
