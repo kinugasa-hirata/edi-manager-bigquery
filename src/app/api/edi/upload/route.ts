@@ -1,9 +1,28 @@
 import { NextResponse } from 'next/server'
 import { BigQuery } from '@google-cloud/bigquery'
 
-const bq = new BigQuery({ projectId: 'my-test-app-498101', ...(process.env.GOOGLE_CREDENTIALS_JSON ? { credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON) } : {}) })
+const bq = new BigQuery({
+  projectId: 'my-test-app-498101',
+  ...(process.env.GOOGLE_CREDENTIALS_JSON
+    ? { credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON) }
+    : {}),
+})
 const DS  = 'my_app_db'
-const TBL = `\`my-test-app-498101.${DS}.orders\``
+const TBL = '`my-test-app-498101.my_app_db.orders`'
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function esc(v: unknown): string {
+  return String(v ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
+function dateOrNull(v: unknown): string {
+  if (!v) return 'NULL'
+  const s = String(v).slice(0, 10)
+  return s.length === 10 ? `DATE '${s}'` : 'NULL'
+}
+
+// ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
   try {
@@ -12,123 +31,92 @@ export async function POST(req: Request) {
 
     // ── upsert_orders ────────────────────────────────────────────────────────
     if (action === 'upsert_orders') {
-      let inserted = 0, updated = 0, skipped = 0
-      const CHUNK = 200
+      if (!rows || rows.length === 0)
+        return NextResponse.json({ inserted: 0, updated: 0, skipped: 0 })
 
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk    = rows.slice(i, i + CHUNK)
-        const orderNos = chunk.map((r: any) => `'${String(r.order_no).replace(/'/g, "\\'")}'`).join(',')
+      const unionRows = (rows as any[]).map((r) => {
+        return [
+          `SELECT`,
+          `  '${esc(r.order_no)}'     AS order_no,`,
+          `  '${esc(r.product_code)}' AS product_code,`,
+          `  '${esc(r.product_name)}' AS product_name,`,
+          `  '${esc(r.group_name)}'   AS group_name,`,
+          `  '${esc(r.lot_number)}'   AS lot_number,`,
+          `  ${dateOrNull(r.delivery_date)} AS delivery_date,`,
+          `  ${dateOrNull(r.order_date)}    AS order_date,`,
+          `  ${Number(r.quantity   ?? 0)} AS quantity,`,
+          `  ${Number(r.unit_price ?? 0)} AS unit_price,`,
+          `  ${Number(r.amount     ?? 0)} AS amount,`,
+          `  ${Number(r.weight_g   ?? 0)} AS weight_g,`,
+          `  '${esc(r.mfg_lot_no)}'  AS mfg_lot_no,`,
+          `  '${esc(r.status ?? 'active')}' AS status,`,
+          `  '${esc(r.source_file)}' AS source_file`,
+        ].join('\n')
+      }).join('\nUNION ALL\n')
 
-        // Check existing
-        const [existing] = await bq.query({
-          query: `SELECT order_no FROM ${TBL} WHERE order_no IN (${orderNos})`,
-        })
-        const existingSet = new Set(existing.map((r: any) => r.order_no))
+      const mergeSQL = `
+        MERGE ${TBL} AS T
+        USING (${unionRows}) AS S
+        ON T.order_no = S.order_no
+        WHEN MATCHED THEN UPDATE SET
+          T.product_code  = S.product_code,
+          T.product_name  = S.product_name,
+          T.group_name    = S.group_name,
+          T.lot_number    = S.lot_number,
+          T.delivery_date = S.delivery_date,
+          T.order_date    = S.order_date,
+          T.quantity      = S.quantity,
+          T.unit_price    = S.unit_price,
+          T.amount        = S.amount,
+          T.weight_g      = S.weight_g,
+          T.mfg_lot_no    = S.mfg_lot_no,
+          T.status        = S.status,
+          T.source_file   = S.source_file
+        WHEN NOT MATCHED THEN INSERT
+          (order_no, product_code, product_name, group_name, lot_number,
+           delivery_date, order_date, quantity, unit_price, amount,
+           weight_g, mfg_lot_no, status, source_file)
+        VALUES
+          (S.order_no, S.product_code, S.product_name, S.group_name, S.lot_number,
+           S.delivery_date, S.order_date, S.quantity, S.unit_price, S.amount,
+           S.weight_g, S.mfg_lot_no, S.status, S.source_file)
+      `
 
-        const newRows = chunk.filter((r: any) => !existingSet.has(r.order_no))
-        const updateRows = chunk.filter((r: any) => existingSet.has(r.order_no))
-
-        // INSERT new rows via streaming (fast)
-        if (newRows.length > 0) {
-          const insertData = newRows.map((r: any) => ({
-            order_no:      r.order_no      ?? '',
-            product_code:  r.product_code  ?? '',
-            product_name:  r.product_name  ?? '',
-            group_name:    r.group_name    ?? '',
-            lot_number:    r.lot_number    ?? '',
-            delivery_date: r.delivery_date ?? null,
-            order_date:    r.order_date    ?? null,
-            quantity:      r.quantity      ?? 0,
-            unit_price:    r.unit_price    ?? 0,
-            amount:        r.amount        ?? 0,
-            weight_g:      r.weight_g      ?? 0,
-            mfg_lot_no:    r.mfg_lot_no    ?? '',
-            status:        r.status        ?? 'active',
-            source_file:   r.source_file   ?? '',
-          }))
-          try {
-            await bq.dataset(DS).table('orders').insert(insertData)
-            inserted += newRows.length
-          } catch (e: any) {
-            // insertErrors may contain partial success
-            if (e.name === 'PartialFailureError') {
-              inserted += newRows.length - (e.errors?.length ?? 0)
-              skipped  += e.errors?.length ?? 0
-            } else {
-              console.error('[insert error]', e.message)
-              skipped += newRows.length
-            }
-          }
-        }
-
-        // UPDATE existing rows via SQL (one by one but fewer rows)
-        for (const r of updateRows) {
-          try {
-            await bq.query({
-              query: `UPDATE ${TBL} SET
-                product_code=@pc, product_name=@pn, group_name=@gn,
-                lot_number=@ln, delivery_date=@dd, order_date=@od,
-                quantity=@qty, unit_price=@up, amount=@amt,
-                weight_g=@wg, mfg_lot_no=@mfg, status=@st, source_file=@sf
-                WHERE order_no=@ono`,
-              params: {
-                ono: r.order_no     ?? '',
-                pc:  r.product_code ?? '',
-                pn:  r.product_name ?? '',
-                gn:  r.group_name   ?? '',
-                ln:  r.lot_number   ?? '',
-                dd:  r.delivery_date ?? '',
-                od:  r.order_date   ?? '',
-                qty: r.quantity     ?? 0,
-                up:  r.unit_price   ?? 0,
-                amt: r.amount       ?? 0,
-                wg:  r.weight_g     ?? 0,
-                mfg: r.mfg_lot_no   ?? '',
-                st:  r.status       ?? 'active',
-                sf:  r.source_file  ?? '',
-              },
-              types: {
-                ono:'STRING',pc:'STRING',pn:'STRING',gn:'STRING',ln:'STRING',
-                dd:'STRING',od:'STRING',qty:'INT64',up:'FLOAT64',amt:'FLOAT64',
-                wg:'FLOAT64',mfg:'STRING',st:'STRING',sf:'STRING',
-              },
-            })
-            updated++
-          } catch { skipped++ }
-        }
+      try {
+        const [job]  = await bq.createQueryJob({ query: mergeSQL })
+        await job.getQueryResults()
+        const qStats = (job as any).metadata?.statistics?.query
+        const inserted = Number(qStats?.numDmlAffectedRows ?? 0)
+        return NextResponse.json({ inserted, updated: 0, skipped: 0 })
+      } catch (e: any) {
+        console.error('[merge error]', e.message)
+        return NextResponse.json({ inserted: 0, updated: 0, skipped: rows.length })
       }
-      return NextResponse.json({ inserted, updated, skipped })
     }
 
     // ── cancel_orders ────────────────────────────────────────────────────────
     if (action === 'cancel_orders') {
-      let cancelled = 0, notFound = 0
-      // Process in bulk using IN clause
-      const CHUNK = 200
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk    = rows.slice(i, i + CHUNK)
-        const orderNos = chunk.map((o: string) => `'${o}'`).join(',')
-        try {
-          const [ex] = await bq.query({
-            query: `SELECT order_no FROM ${TBL} WHERE order_no IN (${orderNos})`,
-          })
-          const foundSet = new Set(ex.map((r: any) => r.order_no))
-          for (const o of chunk) {
-            if (foundSet.has(o)) cancelled++
-            else notFound++
-          }
-          if (foundSet.size > 0) {
-            const inList = Array.from(foundSet).map(o => `'${o}'`).join(',')
-            await bq.query({
-              query: `UPDATE ${TBL} SET status='cancelled' WHERE order_no IN (${inList})`,
-            })
-          }
-        } catch (e: any) {
-          console.error('[cancel error]', e.message)
-          notFound += chunk.length
-        }
+      if (!rows || rows.length === 0)
+        return NextResponse.json({ cancelled: 0, notFound: 0 })
+
+      const inList = (rows as string[]).map(o => `'${esc(o)}'`).join(',')
+
+      try {
+        const [[{ cnt }]] = await bq.query({
+          query: `SELECT COUNT(*) AS cnt FROM ${TBL}
+                  WHERE order_no IN (${inList}) AND status != 'cancelled'`,
+        })
+        const found = Number(cnt ?? 0)
+
+        await bq.query({
+          query: `UPDATE ${TBL} SET status='cancelled' WHERE order_no IN (${inList})`,
+        })
+
+        return NextResponse.json({ cancelled: found, notFound: rows.length - found })
+      } catch (e: any) {
+        console.error('[cancel error]', e.message)
+        return NextResponse.json({ cancelled: 0, notFound: rows.length })
       }
-      return NextResponse.json({ cancelled, notFound })
     }
 
     // ── write_log ────────────────────────────────────────────────────────────

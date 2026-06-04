@@ -45,7 +45,6 @@ function assignLot(deliveryDate: string, lots: LotDefinition[]): string {
   return '範囲外'
 }
 
-// ── Build payload rows ────────────────────────────────────────────────────────
 function buildPayload(
   rows: EdiRow[],
   products: ProductMaster[],
@@ -82,11 +81,10 @@ function buildPayload(
   })
 }
 
-// ── POST to API in chunks to avoid timeout ────────────────────────────────────
 async function postInChunks(
   action: string,
   rows: any[],
-  chunkSize = 50,
+  chunkSize = 100,
 ): Promise<{ inserted: number; updated: number; skipped: number; cancelled: number; notFound: number }> {
   let inserted = 0, updated = 0, skipped = 0, cancelled = 0, notFound = 0
 
@@ -125,7 +123,7 @@ export async function processNormalEdi(
   const payload = buildPayload(rows, products, lots, sourceFile)
   if (onProgress) onProgress(payload.length)
 
-  const result = await postInChunks('upsert_orders', payload, 50)
+  const result = await postInChunks('upsert_orders', payload, 100)
   return { inserted: result.inserted, updated: result.updated, skipped: result.skipped }
 }
 
