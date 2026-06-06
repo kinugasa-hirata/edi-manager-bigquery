@@ -10,26 +10,27 @@ const bq = new BigQuery({
 const DS  = 'my_app_db'
 const TBL = '`my-test-app-498101.my_app_db.orders`'
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 function esc(v: unknown): string {
   return String(v ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
-function dateOrNull(v: unknown): string {
+function toTimestampOrNull(v: unknown): string {
   if (!v) return 'NULL'
   const s = String(v).slice(0, 10)
   return s.length === 10 ? `TIMESTAMP '${s} 00:00:00'` : 'NULL'
 }
 
-// ── POST ─────────────────────────────────────────────────────────────────────
+function toDateStrOrNull(v: unknown): string {
+  if (!v) return 'NULL'
+  const s = String(v).slice(0, 10)
+  return s.length === 10 ? `'${s}'` : 'NULL'
+}
 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
     const { action, rows } = body
 
-    // ── upsert_orders ────────────────────────────────────────────────────────
     if (action === 'upsert_orders') {
       if (!rows || rows.length === 0)
         return NextResponse.json({ inserted: 0, updated: 0, skipped: 0 })
@@ -42,8 +43,8 @@ export async function POST(req: Request) {
           `  '${esc(r.product_name)}' AS product_name,`,
           `  '${esc(r.group_name)}'   AS group_name,`,
           `  '${esc(r.lot_number)}'   AS lot_number,`,
-          `  ${dateOrNull(r.delivery_date)} AS delivery_date,`,
-          `  ${dateOrNull(r.order_date)}    AS order_date,`,
+          `  ${toTimestampOrNull(r.delivery_date)} AS delivery_date,`,
+          `  ${toDateStrOrNull(r.order_date)}      AS order_date,`,
           `  ${Number(r.quantity   ?? 0)} AS quantity,`,
           `  ${Number(r.unit_price ?? 0)} AS unit_price,`,
           `  ${Number(r.amount     ?? 0)} AS amount,`,
@@ -58,20 +59,6 @@ export async function POST(req: Request) {
         MERGE ${TBL} AS T
         USING (${unionRows}) AS S
         ON T.order_no = S.order_no
-        WHEN MATCHED THEN UPDATE SET
-          T.product_code  = S.product_code,
-          T.product_name  = S.product_name,
-          T.group_name    = S.group_name,
-          T.lot_number    = S.lot_number,
-          T.delivery_date = S.delivery_date,
-          T.order_date    = S.order_date,
-          T.quantity      = S.quantity,
-          T.unit_price    = S.unit_price,
-          T.amount        = S.amount,
-          T.weight_g      = S.weight_g,
-          T.mfg_lot_no    = S.mfg_lot_no,
-          T.status        = S.status,
-          T.source_file   = S.source_file
         WHEN NOT MATCHED THEN INSERT
           (order_no, product_code, product_name, group_name, lot_number,
            delivery_date, order_date, quantity, unit_price, amount,
@@ -94,7 +81,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ── cancel_orders ────────────────────────────────────────────────────────
     if (action === 'cancel_orders') {
       if (!rows || rows.length === 0)
         return NextResponse.json({ cancelled: 0, notFound: 0 })
@@ -119,7 +105,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ── write_log ────────────────────────────────────────────────────────────
     if (action === 'write_log') {
       const r = rows
       try {

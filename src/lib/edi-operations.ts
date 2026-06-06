@@ -52,12 +52,11 @@ function buildPayload(
   sourceFile: string,
 ): any[] {
   const productMap = new Map(products.map(p => [p.product_code, p]))
-  const cutoff     = '2026-04-01'
 
   const validRows = rows.filter(r => {
     if (!r.order_no || !r.product_code) return false
     if (!productMap.has(r.product_code)) return false
-    return toDateStr(r.delivery_date) >= cutoff
+    return true
   })
 
   return validRows.map(r => {
@@ -112,7 +111,6 @@ async function postInChunks(
   return { inserted, updated, skipped, cancelled, notFound }
 }
 
-// ── 0502 Normal ───────────────────────────────────────────────────────────────
 export async function processNormalEdi(
   rows: EdiRow[],
   products: ProductMaster[],
@@ -127,7 +125,6 @@ export async function processNormalEdi(
   return { inserted: result.inserted, updated: result.updated, skipped: result.skipped }
 }
 
-// ── 0503 Henkou ───────────────────────────────────────────────────────────────
 export async function processHenkouEdi(
   rows: EdiRow[],
   products: ProductMaster[],
@@ -139,7 +136,6 @@ export async function processHenkouEdi(
   return { updated: result.updated, inserted: result.inserted, skipped: result.skipped }
 }
 
-// ── 0504 Torikeshi ────────────────────────────────────────────────────────────
 export async function processCancelEdi(
   rows: EdiRow[],
   onProgress?: (n: number) => void,
@@ -151,7 +147,6 @@ export async function processCancelEdi(
   return { cancelled: result.cancelled, notFound: result.notFound }
 }
 
-// ── Upload Log ────────────────────────────────────────────────────────────────
 export async function writeUploadLog(data: {
   filename: string; file_type: string; rows_total: number
   rows_inserted?: number; rows_updated?: number
